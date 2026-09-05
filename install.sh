@@ -6,10 +6,12 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "$0")" && pwd)"
 
-# 1. launcher on PATH
+# 1. launchers on PATH
 mkdir -p "$HOME/.local/bin"
 ln -sf "$repo/bin/omalink" "$HOME/.local/bin/omalink"
-echo "✓ omalink → ~/.local/bin/omalink"
+ln -sf "$repo/bin/omalink-doctor" "$HOME/.local/bin/omalink-doctor"
+ln -sf "$repo/bin/omalink-setup-theme" "$HOME/.local/bin/omalink-setup-theme"
+echo "✓ omalink, omalink-doctor → ~/.local/bin/"
 
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
@@ -29,6 +31,6 @@ else
 fi
 
 echo
-echo "Done. Launch with 'omalink' or from your app launcher."
-echo "Requirements: kdeconnect (paired), gtk4, libadwaita, python-gobject, gdk-pixbuf2."
-echo "Optional: sshfs (photos), scrcpy + android-tools (mirror), libheif (HEIC)."
+echo "Running the setup check…"
+echo
+"$repo/bin/omalink-doctor" "$@"

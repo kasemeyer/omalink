@@ -3,7 +3,8 @@
 # Pass --purge to also delete user data (hidden-thread list).
 set -euo pipefail
 
-rm -f "$HOME/.local/bin/omalink" && echo "✓ removed ~/.local/bin/omalink"
+rm -f "$HOME/.local/bin/omalink" "$HOME/.local/bin/omalink-doctor" \
+      "$HOME/.local/bin/omalink-setup-theme" && echo "✓ removed launchers from ~/.local/bin"
 rm -f "$HOME/.local/share/applications/omalink.desktop" && echo "✓ removed desktop entry"
 rm -f "$HOME/.config/omarchy/themed/omalink.css.tpl" && echo "✓ removed theme template"
 rm -f "$HOME/.local/state/omarchy/current/theme/omalink.css" 2>/dev/null || true

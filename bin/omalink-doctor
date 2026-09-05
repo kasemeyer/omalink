@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Omalink setup helper: check dependencies, offer to install what's
+# missing, make sure kdeconnectd is running, and guide phone pairing.
+# Safe to run repeatedly. Nothing here is destructive.
+set -uo pipefail
+
+bold=$'\e[1m'; dim=$'\e[2m'; grn=$'\e[32m'; ylw=$'\e[33m'; red=$'\e[31m'; rst=$'\e[0m'
+ok(){ echo "  ${grn}✓${rst} $1"; }
+warn(){ echo "  ${ylw}•${rst} $1"; }
+bad(){ echo "  ${red}✗${rst} $1"; }
+
+# pkg  binary-to-probe  "what it enables"  required?
+REQUIRED=(
+  "kdeconnect|kdeconnectd|the entire phone backend|yes"
+  "gtk4|.|the app toolkit|yes"
+  "libadwaita|.|the app toolkit|yes"
+  "python-gobject|.|GTK Python bindings|yes"
+  "gdk-pixbuf2|.|image previews|yes"
+)
+OPTIONAL=(
+  "sshfs|sshfs|Photos tab (mounts the phone)|no"
+  "scrcpy|scrcpy|screen mirroring|no"
+  "android-tools|adb|adb, needed by scrcpy wireless setup|no"
+  "libheif|.|HEIC photo/attachment decoding|no"
+)
+
+missing=()
+
+check_group() {
+  local -n group=$1
+  for entry in "${group[@]}"; do
+    IFS='|' read -r pkg bin desc req <<<"$entry"
+    if pacman -Q "$pkg" >/dev/null 2>&1; then
+      ok "$pkg — $desc"
+    else
+      if [[ $req == yes ]]; then bad "$pkg MISSING — $desc (required)"
+      else warn "$pkg not installed — $desc"; fi
+      missing+=("$pkg")
+    fi
+  done
+}
+
+echo "${bold}Omalink setup check${rst}"
+echo
+echo "${bold}Required${rst}"
+check_group REQUIRED
+echo
+echo "${bold}Optional${rst}  ${dim}(each gates one feature)${rst}"
+check_group OPTIONAL
+
+# ---- offer to install missing packages -------------------------------
+if (( ${#missing[@]} )); then
+  echo
+  echo "Missing: ${bold}${missing[*]}${rst}"
+  if [[ ${1:-} == "--yes" ]]; then reply=y; else
+    read -rp "Install them now with pacman? [y/N] " reply
+  fi
+  if [[ ${reply,,} == y ]]; then
+    sudo pacman -S --needed "${missing[@]}"
+  else
+    echo "Skipped. Install later with: ${dim}sudo pacman -S --needed ${missing[*]}${rst}"
+  fi
+fi
+
+# ---- daemon ----------------------------------------------------------
+echo
+echo "${bold}KDE Connect daemon${rst}"
+if pgrep -x kdeconnectd >/dev/null; then
+  ok "kdeconnectd is running"
+else
+  warn "kdeconnectd is not running — starting it"
+  (kdeconnectd >/dev/null 2>&1 &) ; sleep 2
+  pgrep -x kdeconnectd >/dev/null && ok "started" || bad "could not start kdeconnectd"
+fi
+
+# ---- pairing ---------------------------------------------------------
+echo
+echo "${bold}Phone pairing${rst}"
+paired=$(kdeconnect-cli --list-available --id-name-only 2>/dev/null)
+if [[ -n $paired ]]; then
+  ok "paired and reachable:"
+  echo "$paired" | sed 's/^/      /'
+else
+  all=$(kdeconnect-cli --list-devices --id-name-only 2>/dev/null | grep -v '^$' || true)
+  if [[ -n $all ]]; then
+    warn "known but not reachable (phone asleep or off Wi-Fi?):"
+    echo "$all" | sed 's/^/      /'
+  else
+    warn "no paired phone found."
+  fi
+  echo
+  echo "  To pair:"
+  echo "    1. Install ${bold}KDE Connect${rst} on the phone (Play Store / F-Droid)."
+  echo "    2. Put both devices on the same Wi-Fi."
+  echo "    3. Opening the pairing UI now — accept the request on the phone."
+  kdeconnect-cli --refresh >/dev/null 2>&1 || true
+  command -v kdeconnect-app >/dev/null && (kdeconnect-app >/dev/null 2>&1 &)
+fi
+
+echo
+echo "${bold}Done.${rst} Re-run anytime: ${dim}omalink-doctor${rst}"
