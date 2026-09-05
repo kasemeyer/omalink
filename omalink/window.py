@@ -18,7 +18,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, GObject, Gtk, Pango
 
 from . import mirror
 from .kdeconnect import MESSAGE_SENT
@@ -394,6 +394,14 @@ class OmalinkWindow(Adw.ApplicationWindow):
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
         self.thread_header = Gtk.Box(spacing=10, margin_top=10, margin_bottom=10,
                                      margin_start=16, margin_end=16)
+        # Back button — only meaningful when the list/thread split is
+        # collapsed to single-pane navigation on a narrow window.
+        self.thread_back = Gtk.Button(icon_name="go-previous-symbolic",
+                                      tooltip_text="Back to conversations")
+        self.thread_back.add_css_class("flat")
+        self.thread_back.connect("clicked",
+                                 lambda *a: self.msg_split.set_show_content(False))
+        self.thread_header.append(self.thread_back)
         self.thread_avatar = Adw.Avatar(size=36, show_initials=True)
         self.thread_header.append(self.thread_avatar)
         tv = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -460,6 +468,9 @@ class OmalinkWindow(Adw.ApplicationWindow):
             min_sidebar_width=280,
             max_sidebar_width=360,
         )
+        self.msg_split.bind_property(
+            "collapsed", self.thread_back, "visible",
+            GObject.BindingFlags.SYNC_CREATE)
         return self.msg_split
 
     def _clear_thread_pane(self):
