@@ -62,6 +62,15 @@ if (( ${#missing[@]} )); then
   fi
 fi
 
+# Nothing below can work without the backend installed. Stop here with a
+# clear next step rather than printing pairing instructions that can't
+# succeed (and trying to launch a kdeconnect UI that isn't installed).
+if ! command -v kdeconnectd >/dev/null 2>&1; then
+  echo
+  bad "kdeconnect isn't installed — install the packages above first, then re-run ${dim}omalink-doctor${rst} to pair."
+  exit 1
+fi
+
 # ---- daemon ----------------------------------------------------------
 echo
 echo "${bold}KDE Connect daemon${rst}"

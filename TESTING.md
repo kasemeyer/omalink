@@ -71,3 +71,31 @@ omarchy plugin add https://github.com/<you>/omalink-bar.git --enable --yes
 - [ ] Does the plugin land disabled (as Omarchy intends) and is that clear?
 
 Record findings back here as a punch list; fix, then re-run.
+
+## Run 1 — 2026-09-05 (app + plugin + packages + phone, full teardown)
+
+Teardown: removed omalink app, omalink-bar, omaconnect; `pacman -R
+kdeconnect scrcpy sshfs`; phone KDE Connect app uninstalled, wireless
+debugging off.
+
+Findings:
+
+- [x] **F2 (fixed): doctor ran the pairing section with kdeconnect
+      absent** — printed pairing steps and tried to launch a
+      nonexistent `kdeconnect-app`. Now it stops after the dependency
+      check with "install the packages above first, then re-run" when
+      `kdeconnectd` isn't on PATH.
+- [ ] **F1: stale `kdeconnectd` after `pacman -R`** — the removed
+      daemon keeps running until logout, so a `pgrep` check reads
+      "running" against a binary that's gone. Low priority; the fixed
+      F2 gate (command -v kdeconnectd) sidesteps it during setup.
+- [x] install.sh cleanly did launchers + desktop entry + theme
+      template, then ran the doctor. Good first-run entry point.
+- [x] doctor correctly flagged all three missing packages and named
+      the feature each optional one gates.
+- [ ] **F3: auto-install is interactive-only** — `sudo pacman` can't
+      run unattended; fine for a real user, but document that the
+      first run needs a sudo password.
+- [ ] TODO (next): reinstall deps, re-pair, first app launch — observe
+      empty state with no device, then raw-number window before
+      contacts sync.
