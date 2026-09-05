@@ -41,16 +41,18 @@ cp data/omalink.desktop ~/.local/share/applications/
 - [x] Adaptive layout for tiling: notification sidebar collapses to an
   overlay (pin/unpin via the header button), conversation list and thread
   collapse to back-button navigation when narrow
-- [ ] MMS attachments: download/display incoming
-  (`conversations.requestAttachmentFile`) and send outgoing (the
-  attachment `av` argument on `replyToConversation`/`sendWithoutConversation`)
-- [ ] Photos tab via the sftp plugin (mount phone, browse `DCIM/Camera`)
-- [ ] Media player card (`mprisremote` plugin)
-- [ ] Inline reply to app notifications (`notification.sendReply`)
-- [ ] Screen mirroring via scrcpy
-- [ ] Omarchy theme integration (follow the active theme automatically;
-  contact avatar colors should draw their shades/styles from the current
-  Omarchy theme palette instead of libadwaita's stock avatar colors)
+- [x] MMS attachments: incoming thumbnails auto-upgrade to real previews,
+  in-app image viewer with save-as, cache-aware downloads; outgoing via
+  the composer paperclip
+- [x] Photos tab via the sftp plugin (mounts the phone, newest camera shots)
+- [x] Media player card (`mprisremote` plugin)
+- [x] Inline reply to app notifications (`notification.sendReply`)
+- [x] Screen mirror button (spawns scrcpy when installed — `pacman -S scrcpy`,
+  needs USB or wireless ADB debugging enabled on the phone)
+- [x] Omarchy theme integration: `bin/omalink-setup-theme` installs a
+  `themed/` template; the app follows theme switches live, and avatar
+  colors come from the theme's ANSI palette
+- [ ] Calls: dialer and call log (blocked — KDE Connect exposes neither)
 
 ## How it talks to the phone
 
