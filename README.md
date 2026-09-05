@@ -30,7 +30,7 @@ bin/omalink
 Optional install:
 
 ```bash
-ln -sf "$PWD/bin/omalink" ~/.local/bin/omalink
+./install.sh   # symlink + desktop entry + theme template
 cp data/omalink.desktop ~/.local/share/applications/
 ```
 
