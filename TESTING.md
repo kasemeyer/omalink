@@ -96,13 +96,13 @@ Findings:
 - [ ] **F3: auto-install is interactive-only** — `sudo pacman` can't
       run unattended; fine for a real user, but document that the
       first run needs a sudo password.
-- [ ] **F5: phone-initiated pairing is flaky** — the request from the
+- [x] **F5 (fixed): phone-initiated pairing is flaky** — the request from the
       phone timed out before reaching the daemon
       (`isPairRequestedByPeer` stayed false). Pairing succeeded only by
       initiating from the PC (`kdeconnect-cli --pair`) and accepting on
       the phone. The doctor should push a pair request from the PC, not
       just open the UI and wait.
-- [ ] **F6: reinstalling the phone app changes the device id** — the
+- [x] **F6 (fixed): reinstalling the phone app changes the device id** — the
       old pairing (`ddbade19…`) lingered as a stale "paired but
       unreachable" entry alongside the new one. Harmless but confusing;
       omalink picks the reachable device so it's fine, but the doctor

@@ -60,6 +60,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self._show_hidden = False
         self._multi_mode = False
         self._sel_anchor = None
+        self._resynced_on_reach = False
         self._outgoing_attachments = []
         self._suppress_select = False
         self._conv_refresh_pending = False
@@ -204,6 +205,14 @@ class OmalinkWindow(Adw.ApplicationWindow):
             self.battery_label.set_label(f"🔋 {charge}%{bolt}")
         else:
             self.battery_label.set_label("")
+        # Reachability arrives shortly after launch; keep the empty-state
+        # guidance in sync when nothing is loaded yet, and re-pull once the
+        # phone is reachable in case SMS access was just granted.
+        if not self.kdec.conversations:
+            self._update_conv_empty_state(0)
+            if self.kdec.is_reachable and not self._resynced_on_reach:
+                self._resynced_on_reach = True
+                GLib.timeout_add(500, lambda: self.kdec.load_conversations() or False)
 
     def _refresh_media(self):
         title = self.kdec.media_title

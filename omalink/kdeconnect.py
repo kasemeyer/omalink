@@ -160,9 +160,17 @@ class KdeConnect(GObject.Object):
     # -- device lifecycle -------------------------------------------------
 
     def _attach_first_device(self):
-        ids = self.daemon.call_sync(
-            "devices", GLib.Variant("(bb)", (False, True)), Gio.DBusCallFlags.NONE, -1, None
-        ).unpack()[0]
+        # Prefer a reachable + paired device. Reinstalling the phone app
+        # mints a new device id while the old pairing lingers as a stale
+        # "paired but unreachable" entry, so picking the first *paired*
+        # device can attach to the dead one. (onlyReachable, onlyPaired)
+        def query(reachable, paired):
+            return self.daemon.call_sync(
+                "devices", GLib.Variant("(bb)", (reachable, paired)),
+                Gio.DBusCallFlags.NONE, -1, None,
+            ).unpack()[0]
+
+        ids = query(True, True) or query(False, True)
         if ids:
             self._attach_device(ids[0])
 

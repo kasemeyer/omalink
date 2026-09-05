@@ -98,12 +98,29 @@ else
     warn "no paired phone found."
   fi
   echo
-  echo "  To pair:"
-  echo "    1. Install ${bold}KDE Connect${rst} on the phone (Play Store / F-Droid)."
-  echo "    2. Put both devices on the same Wi-Fi."
-  echo "    3. Opening the pairing UI now — accept the request on the phone."
+  echo "  Install ${bold}KDE Connect${rst} on the phone (Play Store / F-Droid) and"
+  echo "  put both devices on the same Wi-Fi. Then, with the phone app open:"
   kdeconnect-cli --refresh >/dev/null 2>&1 || true
-  command -v kdeconnect-app >/dev/null && (kdeconnect-app >/dev/null 2>&1 &)
+  sleep 2
+  # Push the request from here — phone-initiated pairing often times out
+  # before the daemon sees it; PC-initiated is reliable.
+  reachable_unpaired=$(kdeconnect-cli -l --id-only 2>/dev/null | while read -r id; do
+    [ -z "$id" ] && continue
+    p=$(busctl --user get-property org.kde.kdeconnect \
+        "/modules/kdeconnect/devices/$id" org.kde.kdeconnect.device isPaired 2>/dev/null | awk '{print $2}')
+    [ "$p" = "false" ] && echo "$id"
+  done)
+  if [[ -n $reachable_unpaired ]]; then
+    for id in $reachable_unpaired; do kdeconnect-cli --pair -d "$id" >/dev/null 2>&1; done
+    echo "    ${bold}Accept the pairing request on the phone now.${rst}"
+    for i in $(seq 1 15); do
+      if [[ -n $(kdeconnect-cli -a --id-only 2>/dev/null) ]]; then ok "paired!"; break; fi
+      sleep 2
+    done
+  else
+    warn "no phone visible yet — open KDE Connect on the phone and re-run."
+    command -v kdeconnect-app >/dev/null && (kdeconnect-app >/dev/null 2>&1 &)
+  fi
 fi
 
 echo
