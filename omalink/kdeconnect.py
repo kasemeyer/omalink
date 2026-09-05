@@ -54,6 +54,14 @@ MESSAGE_SENT = 2
 
 
 @dataclass
+class Attachment:
+    part_id: int
+    mime_type: str
+    thumbnail_b64: str  # base64-encoded PNG preview
+    part_name: str  # unique identifier, e.g. "PART_1787372105585"
+
+
+@dataclass
 class Message:
     body: str
     addresses: list
@@ -61,7 +69,11 @@ class Message:
     type: int
     thread_id: int
     uid: int
-    has_attachments: bool
+    attachments: list
+
+    @property
+    def has_attachments(self):
+        return bool(self.attachments)
 
     @classmethod
     def from_variant(cls, variant):
@@ -77,7 +89,7 @@ class Message:
             type=mtype,
             thread_id=thread_id,
             uid=uid,
-            has_attachments=bool(attachments),
+            attachments=[Attachment(*a) for a in attachments],
         )
 
 
@@ -118,6 +130,7 @@ class KdeConnect(GObject.Object):
         "device-state": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "conversations-loaded": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "message": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
+        "attachment-received": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
         "notifications-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "call-event": (GObject.SignalFlags.RUN_FIRST, None, (str, str, str)),
     }
@@ -238,18 +251,20 @@ class KdeConnect(GObject.Object):
                 Gio.DBusCallFlags.NONE, -1, None, None,
             )
 
-    def reply_to_conversation(self, thread_id, text):
+    def reply_to_conversation(self, thread_id, text, attachment_paths=()):
+        atts = [GLib.Variant("s", p) for p in attachment_paths]
         self.convs_proxy.call(
             "replyToConversation",
-            GLib.Variant("(xsav)", (thread_id, text, [])),
+            GLib.Variant("(xsav)", (thread_id, text, atts)),
             Gio.DBusCallFlags.NONE, -1, None, None,
         )
 
-    def send_new_sms(self, addresses, text):
+    def send_new_sms(self, addresses, text, attachment_paths=()):
         addr_variants = [GLib.Variant("(s)", (a,)) for a in addresses]
+        atts = [GLib.Variant("s", p) for p in attachment_paths]
         self.convs_proxy.call(
             "sendWithoutConversation",
-            GLib.Variant("(avsav)", (addr_variants, text, [])),
+            GLib.Variant("(avsav)", (addr_variants, text, atts)),
             Gio.DBusCallFlags.NONE, -1, None, None,
         )
 
@@ -261,11 +276,22 @@ class KdeConnect(GObject.Object):
         return conv
 
     def _on_conversation_signal(self, bus, sender, path, iface, signal, params):
+        if signal == "attachmentReceived":
+            file_path, part_name = params.unpack()
+            self.emit("attachment-received", file_path, part_name)
+            return
         if signal not in ("conversationCreated", "conversationUpdated"):
             return
         msg = Message.from_variant(params.get_child_value(0).get_variant())
         self._store(msg)
         self.emit("message", msg)
+
+    def request_attachment(self, part_id, part_name):
+        self.convs_proxy.call(
+            "requestAttachmentFile",
+            GLib.Variant("(xs)", (part_id, part_name)),
+            Gio.DBusCallFlags.NONE, -1, None, None,
+        )
 
     # -- notifications ----------------------------------------------------
 

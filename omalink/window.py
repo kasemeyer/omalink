@@ -15,7 +15,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from .kdeconnect import MESSAGE_SENT
 
@@ -40,6 +40,8 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self.current_thread = None
         self.call_log = []
         self._requested_threads = set()
+        self._pending_downloads = set()
+        self._outgoing_attachments = []
         self._suppress_select = False
         self._conv_refresh_pending = False
         self._thread_render_pending = False
@@ -48,6 +50,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
         kdec.connect("device-state", lambda *a: self._refresh_device())
         kdec.connect("conversations-loaded", lambda *a: self._refresh_conversations())
         kdec.connect("message", self._on_message)
+        kdec.connect("attachment-received", self._on_attachment_received)
         kdec.connect("notifications-changed", lambda *a: self._queue_notif_refresh())
         kdec.connect("call-event", self._on_call_event)
 
@@ -57,7 +60,8 @@ class OmalinkWindow(Adw.ApplicationWindow):
             min_sidebar_width=280,
             max_sidebar_width=320,
         )
-        self.set_content(self.split)
+        self.toasts = Adw.ToastOverlay(child=self.split)
+        self.set_content(self.toasts)
 
         bp_mid = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 1100sp"))
         bp_mid.add_setter(self.split, "collapsed", True)
@@ -264,8 +268,25 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self.thread_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         right.append(self.thread_scroll)
 
+        composer_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.attach_chip = Gtk.Box(spacing=6, margin_start=16, margin_end=16,
+                                   margin_top=6, visible=False)
+        self.attach_label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE)
+        self.attach_label.add_css_class("dim-label")
+        self.attach_chip.append(self.attach_label)
+        clear_att = Gtk.Button(icon_name="window-close-symbolic")
+        clear_att.add_css_class("flat")
+        clear_att.connect("clicked", self._on_clear_attachments)
+        self.attach_chip.append(clear_att)
+        composer_col.append(self.attach_chip)
+
         composer = Gtk.Box(spacing=8, margin_top=8, margin_bottom=12,
                            margin_start=16, margin_end=16)
+        attach = Gtk.Button(icon_name="mail-attachment-symbolic",
+                            tooltip_text="Attach file")
+        attach.add_css_class("flat")
+        attach.connect("clicked", self._on_pick_attachment)
+        composer.append(attach)
         self.entry = Gtk.Entry(hexpand=True, placeholder_text="Send a message")
         self.entry.connect("activate", self._on_send)
         composer.append(self.entry)
@@ -274,7 +295,8 @@ class OmalinkWindow(Adw.ApplicationWindow):
         send.add_css_class("circular")
         send.connect("clicked", self._on_send)
         composer.append(send)
-        right.append(composer)
+        composer_col.append(composer)
+        right.append(composer_col)
 
         self.msg_split = Adw.NavigationSplitView(
             sidebar=Adw.NavigationPage(child=left, title="Messages"),
@@ -377,28 +399,89 @@ class OmalinkWindow(Adw.ApplicationWindow):
             return
         for msg in conv.sorted_messages():
             sent = msg.type == MESSAGE_SENT
-            wrap = Gtk.Box(halign=Gtk.Align.END if sent else Gtk.Align.START)
-            body = msg.body or ("[attachment]" if msg.has_attachments else "")
-            lbl = Gtk.Label(label=body, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR,
-                            xalign=0, selectable=True, max_width_chars=46,
-                            tooltip_text=_fmt_time(msg.date))
-            lbl.add_css_class("bubble-out" if sent else "bubble-in")
-            wrap.append(lbl)
-            self.bubble_box.append(wrap)
+            wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4,
+                           halign=Gtk.Align.END if sent else Gtk.Align.START)
+            for att in msg.attachments:
+                wrap.append(self._attachment_widget(att))
+            if msg.body:
+                lbl = Gtk.Label(label=msg.body, wrap=True,
+                                wrap_mode=Pango.WrapMode.WORD_CHAR,
+                                xalign=0, selectable=True, max_width_chars=46,
+                                tooltip_text=_fmt_time(msg.date))
+                lbl.add_css_class("bubble-out" if sent else "bubble-in")
+                lbl.set_halign(Gtk.Align.END if sent else Gtk.Align.START)
+                wrap.append(lbl)
+            if wrap.get_first_child() is not None:
+                self.bubble_box.append(wrap)
         GLib.idle_add(self._scroll_to_bottom)
+
+    def _attachment_widget(self, att):
+        btn = Gtk.Button(tooltip_text=f"{att.mime_type} — click to open")
+        btn.add_css_class("attachment")
+        child = None
+        if att.thumbnail_b64:
+            try:
+                data = GLib.base64_decode(att.thumbnail_b64)
+                texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
+                child = Gtk.Picture.new_for_paintable(texture)
+                child.set_size_request(180, 180)
+                child.set_content_fit(Gtk.ContentFit.COVER)
+            except GLib.Error:
+                child = None
+        if child is None:
+            child = Gtk.Label(label=f"📎 {att.mime_type}")
+        btn.set_child(child)
+        btn.connect("clicked", self._on_attachment_clicked, att)
+        return btn
+
+    def _on_attachment_clicked(self, _btn, att):
+        self._pending_downloads.add(att.part_name)
+        self.kdec.request_attachment(att.part_id, att.part_name)
+        self.toasts.add_toast(Adw.Toast(title="Downloading attachment…", timeout=2))
+
+    def _on_attachment_received(self, _kdec, file_path, part_name):
+        if part_name not in self._pending_downloads:
+            return
+        self._pending_downloads.discard(part_name)
+        Gtk.FileLauncher(file=Gio.File.new_for_path(file_path)).launch(self, None, None)
 
     def _scroll_to_bottom(self):
         adj = self.thread_scroll.get_vadjustment()
         adj.set_value(adj.get_upper() - adj.get_page_size())
         return False
 
+    def _on_pick_attachment(self, _btn):
+        Gtk.FileDialog(title="Attach files").open_multiple(self, None, self._on_files_picked)
+
+    def _on_files_picked(self, dialog, result):
+        try:
+            files = dialog.open_multiple_finish(result)
+        except GLib.Error:
+            return
+        self._outgoing_attachments = [
+            f.get_path() for f in files if f.get_path()
+        ]
+        self._update_attach_chip()
+
+    def _on_clear_attachments(self, _btn):
+        self._outgoing_attachments = []
+        self._update_attach_chip()
+
+    def _update_attach_chip(self):
+        n = len(self._outgoing_attachments)
+        self.attach_chip.set_visible(n > 0)
+        if n:
+            names = ", ".join(p.rsplit("/", 1)[-1] for p in self._outgoing_attachments)
+            self.attach_label.set_label(f"📎 {names}")
+
     def _on_send(self, _widget):
         text = self.entry.get_text().strip()
         conv = self.kdec.conversations.get(self.current_thread)
-        if not text or not conv:
+        if not conv or (not text and not self._outgoing_attachments):
             return
-        self.kdec.reply_to_conversation(conv.thread_id, text)
+        self.kdec.reply_to_conversation(conv.thread_id, text, self._outgoing_attachments)
         self.entry.set_text("")
+        self._on_clear_attachments(None)
 
     def _on_compose(self, _btn):
         dialog = Adw.AlertDialog(heading="New message",
@@ -468,6 +551,12 @@ def load_css():
             padding: 8px 12px;
         }
         .sidebar-pane { background-color: @sidebar_bg_color; }
+        .attachment {
+            padding: 0;
+            border-radius: 14px;
+            overflow: hidden;
+        }
+        .attachment label { padding: 8px 12px; }
         .success { color: @success_color; }
     """)
     Gtk.StyleContext.add_provider_for_display(
