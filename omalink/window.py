@@ -9,13 +9,16 @@ overlay below 1100px, and the conversation list / thread split collapses
 into back-button navigation below 760px.
 """
 
+import os
+import shutil
+import subprocess
 import time
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
 from .kdeconnect import MESSAGE_SENT
 
@@ -40,7 +43,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self.current_thread = None
         self.call_log = []
         self._requested_threads = set()
-        self._pending_downloads = set()
+        self._pending_downloads = {}
         self._outgoing_attachments = []
         self._suppress_select = False
         self._conv_refresh_pending = False
@@ -53,6 +56,8 @@ class OmalinkWindow(Adw.ApplicationWindow):
         kdec.connect("attachment-received", self._on_attachment_received)
         kdec.connect("notifications-changed", lambda *a: self._queue_notif_refresh())
         kdec.connect("call-event", self._on_call_event)
+        kdec.connect("media-changed", lambda *a: self._refresh_media())
+        kdec.connect("sftp-mounted", self._on_sftp_mounted)
 
         self.split = Adw.OverlaySplitView(
             sidebar=self._build_sidebar(),
@@ -73,8 +78,13 @@ class OmalinkWindow(Adw.ApplicationWindow):
 
         self._refresh_device()
         self._refresh_notifications()
+        self._refresh_media()
         if kdec.device_id:
             GLib.idle_add(lambda: kdec.load_conversations() or False)
+
+    def _attachment_cache_path(self, part_name):
+        name = self.kdec.device_name or ""
+        return os.path.expanduser(f"~/.cache/kdeconnect.daemon/{name}/{part_name}")
 
     # -- sidebar ----------------------------------------------------------
 
@@ -107,6 +117,37 @@ class OmalinkWindow(Adw.ApplicationWindow):
         head.append(status_row)
         box.append(head)
         box.append(Gtk.Separator())
+
+        self.media_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                                  margin_top=10, margin_bottom=4,
+                                  margin_start=12, margin_end=12, visible=False)
+        self.media_card.add_css_class("card")
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                        margin_top=10, margin_bottom=8, margin_start=12, margin_end=12)
+        self.media_player_label = Gtk.Label(xalign=0)
+        self.media_player_label.add_css_class("caption")
+        self.media_player_label.add_css_class("dim-label")
+        inner.append(self.media_player_label)
+        self.media_title_label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.media_title_label.add_css_class("heading")
+        inner.append(self.media_title_label)
+        self.media_artist_label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.media_artist_label.add_css_class("dim-label")
+        inner.append(self.media_artist_label)
+        controls = Gtk.Box(spacing=4, halign=Gtk.Align.CENTER, margin_top=4)
+        for icon, action in (("media-skip-backward-symbolic", "Previous"),
+                             ("media-playback-start-symbolic", "PlayPause"),
+                             ("media-skip-forward-symbolic", "Next")):
+            b = Gtk.Button(icon_name=icon)
+            b.add_css_class("flat")
+            b.add_css_class("circular")
+            b.connect("clicked", lambda _b, a=action: self.kdec.media_action(a))
+            if action == "PlayPause":
+                self.media_playpause_btn = b
+            controls.append(b)
+        inner.append(controls)
+        self.media_card.append(inner)
+        box.append(self.media_card)
 
         notif_head = Gtk.Box(margin_top=12, margin_start=18, margin_end=12)
         lbl = Gtk.Label(label="Notifications", xalign=0, hexpand=True)
@@ -145,6 +186,18 @@ class OmalinkWindow(Adw.ApplicationWindow):
         else:
             self.battery_label.set_label("")
 
+    def _refresh_media(self):
+        title = self.kdec.media_title
+        self.media_card.set_visible(bool(title))
+        if not title:
+            return
+        self.media_player_label.set_label(self.kdec.media_player)
+        self.media_title_label.set_label(title)
+        self.media_artist_label.set_label(self.kdec.media_artist)
+        self.media_playpause_btn.set_icon_name(
+            "media-playback-pause-symbolic" if self.kdec.media_is_playing
+            else "media-playback-start-symbolic")
+
     def _queue_notif_refresh(self):
         if not self._notif_refresh_pending:
             self._notif_refresh_pending = True
@@ -176,6 +229,20 @@ class OmalinkWindow(Adw.ApplicationWindow):
                                  wrap_mode=Pango.WrapMode.WORD_CHAR, lines=3,
                                  ellipsize=Pango.EllipsizeMode.END)
                 inner.append(body)
+            if n.reply_id:
+                reply_box = Gtk.Box(spacing=6)
+                reply_entry = Gtk.Entry(hexpand=True, placeholder_text="Reply",
+                                        visible=False)
+                reply_entry.connect("activate", self._on_notification_reply, n.nid)
+                reply_btn = Gtk.Button(icon_name="mail-reply-sender-symbolic",
+                                       tooltip_text="Reply", halign=Gtk.Align.START)
+                reply_btn.add_css_class("flat")
+                reply_btn.connect(
+                    "clicked",
+                    lambda _b, e=reply_entry: (e.set_visible(True), e.grab_focus()))
+                reply_box.append(reply_btn)
+                reply_box.append(reply_entry)
+                inner.append(reply_box)
             outer.append(inner)
             if n.dismissable:
                 x = Gtk.Button(icon_name="window-close-symbolic", valign=Gtk.Align.START)
@@ -184,6 +251,15 @@ class OmalinkWindow(Adw.ApplicationWindow):
                 outer.append(x)
             row.set_child(outer)
             self.notif_list.append(row)
+
+    def _on_notification_reply(self, entry, nid):
+        text = entry.get_text().strip()
+        if not text:
+            return
+        self.kdec.notification_reply(nid, text)
+        entry.set_text("")
+        entry.set_visible(False)
+        self.toasts.add_toast(Adw.Toast(title="Reply sent", timeout=2))
 
     def _on_dismiss_notification(self, _btn, nid):
         self.kdec.dismiss_notification(nid)
@@ -203,6 +279,8 @@ class OmalinkWindow(Adw.ApplicationWindow):
             self._build_messages(), "messages", "Messages", "chat-message-new-symbolic")
         self.stack.add_titled_with_icon(
             self._build_calls(), "calls", "Calls", "call-start-symbolic")
+        self.stack.add_titled_with_icon(
+            self._build_photos(), "photos", "Photos", "image-x-generic-symbolic")
 
         switcher = Adw.ViewSwitcher(stack=self.stack, policy=Adw.ViewSwitcherPolicy.WIDE)
         header = Adw.HeaderBar(title_widget=switcher)
@@ -210,6 +288,10 @@ class OmalinkWindow(Adw.ApplicationWindow):
                             tooltip_text="Notifications")
         toggle.connect("clicked", self._on_toggle_sidebar)
         header.pack_start(toggle)
+        mirror = Gtk.Button(icon_name="video-display-symbolic",
+                            tooltip_text="Mirror phone screen (scrcpy)")
+        mirror.connect("clicked", self._on_mirror)
+        header.pack_end(mirror)
 
         view = Adw.ToolbarView(hexpand=True)
         view.add_top_bar(header)
@@ -218,6 +300,16 @@ class OmalinkWindow(Adw.ApplicationWindow):
 
     def _on_toggle_sidebar(self, _btn):
         self.split.set_show_sidebar(not self.split.get_show_sidebar())
+
+    def _on_mirror(self, _btn):
+        if not shutil.which("scrcpy"):
+            self.toasts.add_toast(Adw.Toast(
+                title="scrcpy is not installed (sudo pacman -S scrcpy)", timeout=4))
+            return
+        subprocess.Popen(["scrcpy"], start_new_session=True)
+        self.toasts.add_toast(Adw.Toast(
+            title="Starting scrcpy — requires ADB (USB or wireless debugging)",
+            timeout=4))
 
     # -- messages ---------------------------------------------------------
 
@@ -416,16 +508,32 @@ class OmalinkWindow(Adw.ApplicationWindow):
         GLib.idle_add(self._scroll_to_bottom)
 
     def _attachment_widget(self, att):
+        is_image = att.mime_type.startswith("image/")
         btn = Gtk.Button(tooltip_text=f"{att.mime_type} — click to open")
         btn.add_css_class("attachment")
         child = None
-        if att.thumbnail_b64:
+        cached = self._attachment_cache_path(att.part_name)
+        if is_image and os.path.isfile(cached):
+            # Full file already downloaded — render a proper-resolution preview.
+            try:
+                pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(cached, 340, 420, True)
+                child = Gtk.Picture.new_for_paintable(Gdk.Texture.new_for_pixbuf(pb))
+                child.set_content_fit(Gtk.ContentFit.CONTAIN)
+                child.set_can_shrink(False)
+                child.set_size_request(max(pb.get_width(), 140), pb.get_height())
+            except GLib.Error:
+                child = None
+        if child is None and att.thumbnail_b64:
             try:
                 data = GLib.base64_decode(att.thumbnail_b64)
                 texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
                 child = Gtk.Picture.new_for_paintable(texture)
                 child.set_size_request(180, 180)
                 child.set_content_fit(Gtk.ContentFit.COVER)
+                child.set_can_shrink(False)
+                if is_image:
+                    # Fetch the real file so the preview upgrades itself.
+                    self._download(att, action="preview")
             except GLib.Error:
                 child = None
         if child is None:
@@ -434,16 +542,64 @@ class OmalinkWindow(Adw.ApplicationWindow):
         btn.connect("clicked", self._on_attachment_clicked, att)
         return btn
 
-    def _on_attachment_clicked(self, _btn, att):
-        self._pending_downloads.add(att.part_name)
+    def _download(self, att, action):
+        if att.part_name in self._pending_downloads:
+            return
+        self._pending_downloads[att.part_name] = (action, att.mime_type)
         self.kdec.request_attachment(att.part_id, att.part_name)
-        self.toasts.add_toast(Adw.Toast(title="Downloading attachment…", timeout=2))
+
+    def _on_attachment_clicked(self, _btn, att):
+        cached = self._attachment_cache_path(att.part_name)
+        if os.path.isfile(cached):
+            self._open_attachment(cached, att.mime_type)
+        else:
+            self._download(att, action="open")
+            self.toasts.add_toast(Adw.Toast(title="Downloading attachment…", timeout=2))
 
     def _on_attachment_received(self, _kdec, file_path, part_name):
-        if part_name not in self._pending_downloads:
+        action, mime = self._pending_downloads.pop(part_name, (None, ""))
+        if action == "open":
+            self._open_attachment(file_path, mime)
+        elif action == "preview" and not self._thread_render_pending:
+            self._thread_render_pending = True
+            GLib.timeout_add(200, self._do_thread_render)
+
+    def _open_attachment(self, file_path, mime):
+        if mime.startswith("image/") and self._show_image_viewer(file_path):
             return
-        self._pending_downloads.discard(part_name)
         Gtk.FileLauncher(file=Gio.File.new_for_path(file_path)).launch(self, None, None)
+
+    def _show_image_viewer(self, file_path):
+        try:
+            texture = Gdk.Texture.new_from_filename(file_path)
+        except GLib.Error:
+            return False  # e.g. HEIC without a pixbuf loader — hand off to the OS
+        pic = Gtk.Picture.new_for_paintable(texture)
+        pic.set_content_fit(Gtk.ContentFit.CONTAIN)
+        pic.set_hexpand(True)
+        pic.set_vexpand(True)
+        header = Adw.HeaderBar()
+        save = Gtk.Button(icon_name="document-save-symbolic", tooltip_text="Save as…")
+        save.connect("clicked", self._on_save_image, file_path)
+        header.pack_start(save)
+        view = Adw.ToolbarView(content=pic)
+        view.add_top_bar(header)
+        dialog = Adw.Dialog(title="Image", content_width=860, content_height=680)
+        dialog.set_child(view)
+        dialog.present(self)
+        return True
+
+    def _on_save_image(self, _btn, file_path):
+        def done(dialog, result):
+            try:
+                dest = dialog.save_finish(result)
+            except GLib.Error:
+                return
+            shutil.copyfile(file_path, dest.get_path())
+            self.toasts.add_toast(Adw.Toast(title="Image saved", timeout=2))
+
+        fd = Gtk.FileDialog(initial_name=os.path.basename(file_path) + ".jpg")
+        fd.save(self, None, done)
 
     def _scroll_to_bottom(self):
         adj = self.thread_scroll.get_vadjustment()
@@ -505,6 +661,118 @@ class OmalinkWindow(Adw.ApplicationWindow):
         if num and body:
             self.kdec.send_new_sms([num], body)
 
+    # -- photos -----------------------------------------------------------
+
+    def _build_photos(self):
+        self.photos_stack = Gtk.Stack()
+
+        empty = Adw.StatusPage(
+            icon_name="image-x-generic-symbolic", title="Photos",
+            description="Browse the newest camera photos on your phone.")
+        load_btn = Gtk.Button(label="Load photos", halign=Gtk.Align.CENTER)
+        load_btn.add_css_class("pill")
+        load_btn.add_css_class("suggested-action")
+        load_btn.connect("clicked", self._on_load_photos)
+        empty.set_child(load_btn)
+        self.photos_stack.add_named(empty, "empty")
+
+        spinner_page = Adw.StatusPage(title="Mounting phone…")
+        spinner = Gtk.Spinner(spinning=True, width_request=32, height_request=32,
+                              halign=Gtk.Align.CENTER)
+        spinner_page.set_child(spinner)
+        self.photos_stack.add_named(spinner_page, "loading")
+
+        grid_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        bar = Gtk.Box(spacing=8, margin_top=10, margin_bottom=6,
+                      margin_start=14, margin_end=14)
+        lbl = Gtk.Label(label="Recent camera photos", xalign=0, hexpand=True)
+        lbl.add_css_class("title-3")
+        bar.append(lbl)
+        refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh")
+        refresh.add_css_class("flat")
+        refresh.connect("clicked", self._on_load_photos)
+        bar.append(refresh)
+        folder = Gtk.Button(icon_name="folder-open-symbolic",
+                            tooltip_text="Open folder in file manager")
+        folder.add_css_class("flat")
+        folder.connect("clicked", self._on_open_photo_folder)
+        bar.append(folder)
+        grid_box.append(bar)
+        self.photo_flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE,
+                                      max_children_per_line=6, column_spacing=8,
+                                      row_spacing=8, margin_start=14, margin_end=14,
+                                      margin_bottom=14, homogeneous=True,
+                                      valign=Gtk.Align.START)
+        sc = Gtk.ScrolledWindow(vexpand=True, child=self.photo_flow)
+        sc.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        grid_box.append(sc)
+        self.photos_stack.add_named(grid_box, "grid")
+
+        self._camera_dir = None
+        return self.photos_stack
+
+    def _on_load_photos(self, _btn):
+        self.photos_stack.set_visible_child_name("loading")
+        self.kdec.sftp_mount()
+
+    def _on_sftp_mounted(self, _kdec, ok, mount_point):
+        if not ok:
+            self.photos_stack.set_visible_child_name("empty")
+            self.toasts.add_toast(Adw.Toast(title="Couldn't mount the phone", timeout=3))
+            return
+        camera = None
+        for name, path in self.kdec.sftp_directories().items():
+            if "camera" in name.lower() or path.rstrip("/").endswith("DCIM/Camera"):
+                camera = path
+                break
+        if camera is None:
+            candidate = os.path.join(mount_point, "storage/emulated/0/DCIM/Camera")
+            camera = candidate if os.path.isdir(candidate) else None
+        if camera is None or not os.path.isdir(camera):
+            self.photos_stack.set_visible_child_name("empty")
+            self.toasts.add_toast(Adw.Toast(title="Camera folder not found", timeout=3))
+            return
+        self._camera_dir = camera
+        self._populate_photos(camera)
+
+    def _populate_photos(self, camera):
+        exts = (".jpg", ".jpeg", ".png", ".webp")
+        try:
+            entries = [e for e in os.scandir(camera)
+                       if e.is_file() and e.name.lower().endswith(exts)]
+        except OSError:
+            self.photos_stack.set_visible_child_name("empty")
+            return
+        entries.sort(key=lambda e: e.name, reverse=True)
+        self.photo_flow.remove_all()
+        self.photos_stack.set_visible_child_name("grid")
+        queue = [e.path for e in entries[:24]]
+
+        def load_next():
+            if not queue:
+                return False
+            path = queue.pop(0)
+            try:
+                pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 200, 200, True)
+            except GLib.Error:
+                return True
+            pic = Gtk.Picture.new_for_paintable(Gdk.Texture.new_for_pixbuf(pb))
+            pic.set_size_request(180, 180)
+            pic.set_content_fit(Gtk.ContentFit.COVER)
+            btn = Gtk.Button(child=pic, tooltip_text=os.path.basename(path))
+            btn.add_css_class("attachment")
+            btn.connect("clicked",
+                        lambda _b, p=path: self._open_attachment(p, "image/jpeg"))
+            self.photo_flow.append(btn)
+            return True
+
+        GLib.idle_add(load_next)
+
+    def _on_open_photo_folder(self, _btn):
+        if self._camera_dir:
+            Gtk.FileLauncher(
+                file=Gio.File.new_for_path(self._camera_dir)).launch(self, None, None)
+
     # -- calls ------------------------------------------------------------
 
     def _build_calls(self):
@@ -554,7 +822,6 @@ def load_css():
         .attachment {
             padding: 0;
             border-radius: 14px;
-            overflow: hidden;
         }
         .attachment label { padding: 8px 12px; }
         .success { color: @success_color; }

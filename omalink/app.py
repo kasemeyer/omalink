@@ -8,6 +8,7 @@ from gi.repository import Adw, GLib
 
 from .contacts import ContactBook
 from .kdeconnect import KdeConnect
+from .theming import OmarchyTheme
 from .window import OmalinkWindow, load_css
 
 APP_ID = "dev.kc.Omalink"
@@ -22,6 +23,7 @@ class OmalinkApp(Adw.Application):
         win = self.get_active_window()
         if not win:
             load_css()
+            self.theme = OmarchyTheme()
             kdec = KdeConnect()
             contacts = ContactBook(kdec.device_id)
             win = OmalinkWindow(app, kdec, contacts)

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Install the Omarchy theme template for omalink and render it for the
+# current theme. Run once after cloning (and after pulling template changes).
+set -euo pipefail
+
+repo="$(dirname "$(dirname "$(realpath "$0")")")"
+src="$repo/data/omalink.css.tpl"
+dst="$HOME/.config/omarchy/themed/omalink.css.tpl"
+
+mkdir -p "$(dirname "$dst")"
+cp "$src" "$dst"
+
+name="$(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null || true)"
+if [[ -n $name ]] && command -v omarchy-theme-set >/dev/null 2>&1; then
+  # Re-applying the current theme is the supported way to render a new template.
+  omarchy-theme-set "$name"
+  echo "Installed and rendered omalink theme template (theme: $name)"
+else
+  echo "Installed template to $dst — it will render on the next theme change."
+fi

@@ -48,6 +48,8 @@ CONVERSATIONS_IFACE = "org.kde.kdeconnect.device.conversations"
 NOTIFICATIONS_IFACE = "org.kde.kdeconnect.device.notifications"
 NOTIFICATION_IFACE = "org.kde.kdeconnect.device.notifications.notification"
 TELEPHONY_IFACE = "org.kde.kdeconnect.device.telephony"
+MPRIS_IFACE = "org.kde.kdeconnect.device.mprisremote"
+SFTP_IFACE = "org.kde.kdeconnect.device.sftp"
 
 MESSAGE_RECEIVED = 1
 MESSAGE_SENT = 2
@@ -101,6 +103,7 @@ class Notification:
     text: str
     dismissable: bool
     icon_path: str = ""
+    reply_id: str = ""  # non-empty when the notification supports inline reply
 
 
 @dataclass
@@ -133,6 +136,8 @@ class KdeConnect(GObject.Object):
         "attachment-received": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
         "notifications-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "call-event": (GObject.SignalFlags.RUN_FIRST, None, (str, str, str)),
+        "media-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        "sftp-mounted": (GObject.SignalFlags.RUN_FIRST, None, (bool, str)),
     }
 
     def __init__(self):
@@ -168,6 +173,13 @@ class KdeConnect(GObject.Object):
         self.convs_proxy = _proxy(self.bus, self.device_path, CONVERSATIONS_IFACE)
         self.notifications = _proxy(
             self.bus, f"{self.device_path}/notifications", NOTIFICATIONS_IFACE
+        )
+        self.media = _proxy(self.bus, f"{self.device_path}/mprisremote", MPRIS_IFACE)
+        self.sftp = _proxy(self.bus, f"{self.device_path}/sftp", SFTP_IFACE)
+        self.media.connect("g-properties-changed", lambda *a: self.emit("media-changed"))
+        self.bus.signal_subscribe(
+            SERVICE, MPRIS_IFACE, "propertiesChanged", f"{self.device_path}/mprisremote",
+            None, Gio.DBusSignalFlags.NONE, lambda *a: self.emit("media-changed"),
         )
 
         for proxy in (self.device, self.battery):
@@ -325,6 +337,7 @@ class KdeConnect(GObject.Object):
                     text=prop("text"),
                     dismissable=bool(prop("dismissable", False)),
                     icon_path=prop("iconPath"),
+                    reply_id=prop("replyId"),
                 )
             )
         return items
@@ -335,6 +348,77 @@ class KdeConnect(GObject.Object):
             p.call("dismiss", None, Gio.DBusCallFlags.NONE, -1, None, None)
         except GLib.Error:
             pass
+
+    # -- media (mprisremote) ----------------------------------------------
+
+    def _media_prop(self, name, default=""):
+        if not self.media:
+            return default
+        v = self.media.get_cached_property(name)
+        return v.unpack() if v else default
+
+    @property
+    def media_title(self):
+        return self._media_prop("title")
+
+    @property
+    def media_artist(self):
+        return self._media_prop("artist")
+
+    @property
+    def media_player(self):
+        return self._media_prop("player")
+
+    @property
+    def media_is_playing(self):
+        return bool(self._media_prop("isPlaying", False))
+
+    def media_action(self, action):
+        """action: Play, Pause, PlayPause, Next, Previous."""
+        self.media.call(
+            "sendAction", GLib.Variant("(s)", (action,)),
+            Gio.DBusCallFlags.NONE, -1, None, None,
+        )
+
+    # -- notifications: inline reply --------------------------------------
+
+    def notification_reply(self, nid, text):
+        try:
+            p = _proxy(self.bus, f"{self.device_path}/notifications/{nid}", NOTIFICATION_IFACE)
+            p.call("sendReply", GLib.Variant("(s)", (text,)),
+                   Gio.DBusCallFlags.NONE, -1, None, None)
+        except GLib.Error:
+            pass
+
+    # -- sftp (photos) ----------------------------------------------------
+
+    def sftp_mount(self):
+        """Mount the phone filesystem; emits sftp-mounted(ok, mount_point)."""
+        def done(proxy, result):
+            try:
+                ok = proxy.call_finish(result).unpack()[0]
+            except GLib.Error:
+                ok = False
+            mp = ""
+            if ok:
+                try:
+                    mp = self.sftp.call_sync(
+                        "mountPoint", None, Gio.DBusCallFlags.NONE, -1, None
+                    ).unpack()[0]
+                except GLib.Error:
+                    ok = False
+            self.emit("sftp-mounted", ok, mp)
+
+        self.sftp.call("mountAndWait", None, Gio.DBusCallFlags.NONE, 30000, None, done)
+
+    def sftp_directories(self):
+        """Friendly name -> absolute path of browseable phone directories."""
+        try:
+            return self.sftp.call_sync(
+                "getDirectories", None, Gio.DBusCallFlags.NONE, -1, None
+            ).unpack()[0]
+        except GLib.Error:
+            return {}
 
     # -- telephony --------------------------------------------------------
 
