@@ -48,7 +48,9 @@ cp data/omalink.desktop ~/.local/share/applications/
 - [ ] Media player card (`mprisremote` plugin)
 - [ ] Inline reply to app notifications (`notification.sendReply`)
 - [ ] Screen mirroring via scrcpy
-- [ ] Omarchy theme integration
+- [ ] Omarchy theme integration (follow the active theme automatically;
+  contact avatar colors should draw their shades/styles from the current
+  Omarchy theme palette instead of libadwaita's stock avatar colors)
 
 ## How it talks to the phone
 
