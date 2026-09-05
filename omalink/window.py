@@ -20,7 +20,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, GObject, Gtk, Pango
 
-from . import mirror
+from . import demo, mirror
 from .kdeconnect import MESSAGE_SENT
 
 
@@ -191,7 +191,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
         return box
 
     def _refresh_device(self):
-        name = self.kdec.device_name
+        name = "Pixel 9 Pro" if demo.ENABLED else self.kdec.device_name
         self.device_label.set_label(name or "No device")
         if self.kdec.is_reachable:
             self.status_label.set_label("● Connected")
@@ -216,6 +216,13 @@ class OmalinkWindow(Adw.ApplicationWindow):
                 GLib.timeout_add(500, lambda: self.kdec.load_conversations() or False)
 
     def _refresh_media(self):
+        if demo.ENABLED:
+            self.media_card.set_visible(True)
+            self.media_player_label.set_label("Music")
+            self.media_title_label.set_label("Midnight Avenue")
+            self.media_artist_label.set_label("The Lantern Club")
+            self.media_playpause_btn.set_icon_name("media-playback-pause-symbolic")
+            return
         title = self.kdec.media_title
         self.media_card.set_visible(bool(title))
         if not title:
@@ -239,7 +246,8 @@ class OmalinkWindow(Adw.ApplicationWindow):
 
     def _refresh_notifications(self):
         self.notif_list.remove_all()
-        for n in self.kdec.active_notifications():
+        notifs = demo.NOTIFICATIONS if demo.ENABLED else self.kdec.active_notifications()
+        for n in notifs:
             row = Gtk.ListBoxRow(activatable=False)
             outer = Gtk.Box(spacing=8, margin_top=8, margin_bottom=8,
                             margin_start=10, margin_end=6)
@@ -598,9 +606,12 @@ class OmalinkWindow(Adw.ApplicationWindow):
                 when.add_css_class("dim-label")
                 top.append(when)
                 inner.append(top)
-                snippet = " ".join(
-                    (last.body or ("[attachment]" if last.has_attachments else "")).split()
-                )
+                if demo.ENABLED:
+                    snippet = demo.fake_snippet(conv.thread_id)
+                else:
+                    snippet = " ".join(
+                        (last.body or ("[attachment]" if last.has_attachments else "")).split()
+                    )
                 sn = Gtk.Label(label=snippet, xalign=0,
                                ellipsize=Pango.EllipsizeMode.END, single_line_mode=True)
                 sn.add_css_class("dim-label")
@@ -759,7 +770,8 @@ class OmalinkWindow(Adw.ApplicationWindow):
         display = self.contacts.display(conv.addresses)
         self.thread_name.set_label(display)
         self.thread_avatar.set_text(display)
-        raw = ", ".join(conv.addresses)
+        raw = (", ".join(demo.fake_number(a) for a in conv.addresses)
+               if demo.ENABLED else ", ".join(conv.addresses))
         self.thread_sub.set_label(raw if raw != display else "")
         hidden = row.thread_id in self._hidden
         self.hide_btn.set_visible(True)
@@ -805,8 +817,9 @@ class OmalinkWindow(Adw.ApplicationWindow):
                            halign=Gtk.Align.END if sent else Gtk.Align.START)
             for att in msg.attachments:
                 wrap.append(self._attachment_widget(att))
-            if msg.body:
-                lbl = Gtk.Label(label=msg.body, wrap=True,
+            body = demo.fake_snippet(msg.uid) if demo.ENABLED else msg.body
+            if body:
+                lbl = Gtk.Label(label=body, wrap=True,
                                 wrap_mode=Pango.WrapMode.WORD_CHAR,
                                 xalign=0, selectable=True, max_width_chars=46,
                                 tooltip_text=_fmt_time(msg.date))

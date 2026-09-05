@@ -10,6 +10,8 @@ import os
 import quopri
 import re
 
+from . import demo
+
 VCARD_ROOT = os.path.expanduser("~/.local/share/kpeoplevcard")
 
 _TEL_RE = re.compile(r"^TEL[;:]", re.IGNORECASE)
@@ -77,6 +79,8 @@ class ContactBook:
 
     def display(self, addresses):
         """Human-readable name for one or more raw addresses."""
+        if demo.ENABLED:
+            return demo.fake_name(addresses)
         names = []
         for a in addresses:
             name = self.lookup(a) or a
