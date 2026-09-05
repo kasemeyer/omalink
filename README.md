@@ -8,9 +8,18 @@ required).
 ## Requirements
 
 - `kdeconnect` (daemon only — `kdeconnectd` runs headless)
-- `gtk4`, `libadwaita`, `python-gobject` (all stock on Omarchy)
+- `gtk4`, `libadwaita`, `python-gobject`, `gdk-pixbuf2` (all stock on Omarchy)
 - KDE Connect app on the phone, paired, with SMS, notification, and contact
   permissions granted
+
+Optional, feature-gated (the app tells you when one is missing):
+
+- `sshfs` — Photos tab (phone filesystem mount)
+- `scrcpy` + `android-tools` — screen mirroring (guided wireless-ADB setup
+  is built into the mirror button)
+- `libheif` — HEIC attachments in the in-app viewer
+
+A `PKGBUILD` capturing all of this ships in the repo (`makepkg -si`).
 
 ## Run
 

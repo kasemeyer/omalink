@@ -11,7 +11,6 @@ into back-button navigation below 760px.
 
 import os
 import shutil
-import subprocess
 import time
 
 import gi
@@ -20,6 +19,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
+from . import mirror
 from .kdeconnect import MESSAGE_SENT
 
 
@@ -302,14 +302,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self.split.set_show_sidebar(not self.split.get_show_sidebar())
 
     def _on_mirror(self, _btn):
-        if not shutil.which("scrcpy"):
-            self.toasts.add_toast(Adw.Toast(
-                title="scrcpy is not installed (sudo pacman -S scrcpy)", timeout=4))
-            return
-        subprocess.Popen(["scrcpy"], start_new_session=True)
-        self.toasts.add_toast(Adw.Toast(
-            title="Starting scrcpy — requires ADB (USB or wireless debugging)",
-            timeout=4))
+        mirror.start(self, self.kdec, self.toasts)
 
     # -- messages ---------------------------------------------------------
 

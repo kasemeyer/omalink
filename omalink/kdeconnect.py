@@ -222,6 +222,14 @@ class KdeConnect(GObject.Object):
         return bool(v.unpack()) if v else False
 
     @property
+    def reachable_address(self):
+        if not self.device:
+            return ""
+        v = self.device.get_cached_property("reachableAddresses")
+        addrs = v.unpack() if v else []
+        return addrs[0] if addrs else ""
+
+    @property
     def battery_charge(self):
         if not self.battery:
             return -1
