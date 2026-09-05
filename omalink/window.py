@@ -759,8 +759,25 @@ class OmalinkWindow(Adw.ApplicationWindow):
         if row.thread_id not in self._requested_threads:
             self._requested_threads.add(row.thread_id)
             self.kdec.request_conversation(row.thread_id)
+            # Self-heal: kdeconnectd's SMS cache can go cold (it empties
+            # after the plugin re-inits post-permission-grant/reconnect),
+            # and requestConversation returns nothing for a thread the
+            # daemon has forgotten — leaving only the one cached message.
+            # If history hasn't grown shortly, warm the whole cache and
+            # retry this thread once.
+            GLib.timeout_add(1500, self._ensure_thread_loaded, row.thread_id)
         self._render_thread()
         self.msg_split.set_show_content(True)
+
+    def _ensure_thread_loaded(self, thread_id):
+        if thread_id != self.current_thread:
+            return False
+        conv = self.kdec.conversations.get(thread_id)
+        if conv and len(conv.messages) <= 1:
+            self.kdec.load_conversations()  # warm the daemon cache
+            GLib.timeout_add(
+                1500, lambda: self.kdec.request_conversation(thread_id) or False)
+        return False
 
     def _render_thread(self):
         child = self.bubble_box.get_first_child()
