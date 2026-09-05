@@ -4,7 +4,7 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc="Phone hub for Omarchy — messages, notifications, photos, and calls via KDE Connect"
 arch=('any')
-url="https://github.com/kaseyprichard/omalink"
+url="https://github.com/kasemeyer/omalink"
 license=('MIT')
 depends=(
   'python'
