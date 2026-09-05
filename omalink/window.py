@@ -59,6 +59,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self._hidden = _load_hidden()
         self._show_hidden = False
         self._multi_mode = False
+        self._sel_anchor = None
         self._outgoing_attachments = []
         self._suppress_select = False
         self._conv_refresh_pending = False
@@ -351,6 +352,10 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self.conv_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.MULTIPLE)
         self.conv_list.add_css_class("navigation-sidebar")
         self.conv_list.connect("selected-rows-changed", self._on_selection_changed)
+        range_gesture = Gtk.GestureClick()
+        range_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        range_gesture.connect("pressed", self._on_list_pressed)
+        self.conv_list.add_controller(range_gesture)
         sc = Gtk.ScrolledWindow(vexpand=True, child=self.conv_list)
         sc.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         left.append(sc)
@@ -485,6 +490,13 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self._refresh_conversations()
 
     def _on_message(self, _kdec, msg):
+        # A genuinely new incoming message resurfaces a hidden thread
+        # (like unarchiving). The age check keeps daemon re-syncs of old
+        # messages from unhiding everything.
+        if (msg.thread_id in self._hidden and msg.type != MESSAGE_SENT
+                and msg.date / 1000 > time.time() - 300):
+            self._hidden.discard(msg.thread_id)
+            self._save_hidden()
         if not self._conv_refresh_pending:
             self._conv_refresh_pending = True
             GLib.timeout_add(250, self._do_conv_refresh)
@@ -506,6 +518,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
         if self._multi_mode:
             return  # don't wipe an in-progress selection; catch up on exit
         selected = self.current_thread
+        self._sel_anchor = None  # row indices change across rebuilds
         self._suppress_select = True
         try:
             self.conv_list.remove_all()
@@ -566,10 +579,34 @@ class OmalinkWindow(Adw.ApplicationWindow):
     def _on_avatar_pressed(self, gesture, _n, _x, _y, row):
         gesture.set_state(Gtk.EventSequenceState.CLAIMED)
         self._multi_mode = True
+        if gesture.get_current_event_state() & Gdk.ModifierType.SHIFT_MASK:
+            self._select_range_to(row)
+            return
+        self._sel_anchor = row.get_index()
         if row.is_selected():
             self.conv_list.unselect_row(row)
         else:
             self.conv_list.select_row(row)
+
+    def _on_list_pressed(self, gesture, _n, _x, y):
+        """Capture-phase shift-click on a row body: range-select."""
+        if not gesture.get_current_event_state() & Gdk.ModifierType.SHIFT_MASK:
+            return
+        row = self.conv_list.get_row_at_y(int(y))
+        if row is None:
+            return
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        self._multi_mode = True
+        self._select_range_to(row)
+
+    def _select_range_to(self, row):
+        if self._sel_anchor is None:
+            self._sel_anchor = row.get_index()
+        lo, hi = sorted((self._sel_anchor, row.get_index()))
+        for i in range(lo, hi + 1):
+            r = self.conv_list.get_row_at_index(i)
+            if r is not None:
+                self.conv_list.select_row(r)
 
     def _on_selection_changed(self, listbox):
         if self._suppress_select:
@@ -624,6 +661,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self.toasts.add_toast(Adw.Toast(title=msg, timeout=2))
 
     def _open_thread(self, row):
+        self._sel_anchor = row.get_index()
         if row.thread_id == self.current_thread:
             return
         self.current_thread = row.thread_id
