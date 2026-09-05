@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Omalink
+Comment=Phone hub for Omarchy — messages, calls, and notifications via KDE Connect
+Exec=omalink
+Icon=phone
+Terminal=false
+Categories=Network;Utility;
+Keywords=phone;sms;kdeconnect;android;
