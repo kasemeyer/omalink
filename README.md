@@ -5,6 +5,11 @@ Messages, phone notifications, and call events for your Android phone — native
 GTK4/libadwaita on Wayland, powered by the KDE Connect daemon (no Plasma
 required).
 
+![Omalink — messages, notifications, and media, with the Omalink bar panel](preview.png)
+
+Pairs with the [Omalink bar](https://github.com/kasemeyer/omalink-bar) widget,
+which puts phone status and quick actions in the Omarchy bar.
+
 ## Requirements
 
 - `kdeconnect` (daemon only — `kdeconnectd` runs headless)
