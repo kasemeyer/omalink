@@ -47,6 +47,48 @@ def _launch_scrcpy(toasts):
     toasts.add_toast(Adw.Toast(title="Starting scrcpy…", timeout=3))
 
 
+def _discover_connect_port(ip, callback):
+    """Find the phone's current wireless-debugging port via mDNS.
+
+    The port changes every time wireless debugging toggles (and often
+    right after pairing), so never trust a remembered one. Arch's adb is
+    built without mdns support; avahi-browse covers it.
+
+    callback(port or None).
+    """
+    if not shutil.which("avahi-browse"):
+        callback(None)
+        return
+
+    def done(ok, out):
+        for line in out.splitlines():
+            f = line.split(";")
+            if len(f) > 8 and f[0] == "=" and f[7] == ip:
+                callback(f[8])
+                return
+        callback(None)
+
+    _run_async(["avahi-browse", "-rpt", "_adb-tls-connect._tcp"], done)
+
+
+def _try_autoconnect(ip, toasts, on_fail):
+    """Discover the current port and adb connect; scrcpy on success."""
+    def with_port(port):
+        if not port:
+            on_fail()
+            return
+
+        def connected(ok, out):
+            if "connected" in out and "cannot" not in out and "failed" not in out:
+                _launch_scrcpy(toasts)
+            else:
+                on_fail()
+
+        _run_async(["adb", "connect", f"{ip}:{port}"], connected)
+
+    _discover_connect_port(ip, with_port)
+
+
 def start(window, kdec, toasts):
     """Entry point for the mirror button."""
     missing = [t for t in ("scrcpy", "adb") if not shutil.which(t)]
@@ -77,7 +119,15 @@ def start(window, kdec, toasts):
             d.add_response("ok", "OK")
             d.present(window)
         else:
-            _PairDialog(window, kdec, toasts).present(window)
+            # Paired earlier? The port has probably just moved — find the
+            # current one over mDNS before bothering the user.
+            ip = kdec.reachable_address
+            if ip:
+                _try_autoconnect(
+                    ip, toasts,
+                    on_fail=lambda: _PairDialog(window, kdec, toasts).present(window))
+            else:
+                _PairDialog(window, kdec, toasts).present(window)
 
     _run_async(["adb", "devices"], devices_done)
 
@@ -142,8 +192,27 @@ class _PairDialog(Adw.Dialog):
             self._say("Enter the IP, pairing port, and code first.")
             return
         self._say("Pairing…")
-        _run_async(["adb", "pair", f"{ip}:{port}", code],
-                   lambda ok, out: self._say(out))
+
+        def paired(ok, out):
+            self._say(out)
+            if "Successfully paired" in out:
+                self._say(out + "\nConnecting automatically…")
+
+                def failed():
+                    self._say("Paired. Auto-connect didn't find the port — enter "
+                              "the one from the Wireless debugging screen and "
+                              "press Connect.")
+
+                def with_port(p):
+                    if not p:
+                        failed()
+                        return
+                    self.conn_port.set_text(p)
+                    self._do_connect(ip, p, failed)
+
+                _discover_connect_port(ip, with_port)
+
+        _run_async(["adb", "pair", f"{ip}:{port}", code], paired)
 
     def _on_connect(self, _btn):
         ip = self.ip.get_text().strip()
@@ -152,11 +221,15 @@ class _PairDialog(Adw.Dialog):
             self._say("Enter the IP and connect port first.")
             return
         self._say("Connecting…")
+        self._do_connect(ip, port, lambda: None)
 
+    def _do_connect(self, ip, port, on_fail):
         def done(ok, out):
             self._say(out)
-            if "connected" in out and "cannot" not in out:
+            if "connected" in out and "cannot" not in out and "failed" not in out:
                 self.close()
                 _launch_scrcpy(self.toasts)
+            else:
+                on_fail()
 
         _run_async(["adb", "connect", f"{ip}:{port}"], done)

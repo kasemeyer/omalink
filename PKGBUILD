@@ -18,6 +18,7 @@ optdepends=(
   'sshfs: Photos tab (mounts the phone via the KDE Connect sftp plugin)'
   'scrcpy: screen mirroring'
   'android-tools: adb, required by scrcpy wireless setup'
+  'avahi: auto-discover the wireless-debugging port (Arch adb lacks mdns)'
   'libheif: decode HEIC attachments in the image viewer'
 )
 source=()
