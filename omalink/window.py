@@ -358,7 +358,15 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self.conv_list.add_controller(range_gesture)
         sc = Gtk.ScrolledWindow(vexpand=True, child=self.conv_list)
         sc.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        left.append(sc)
+
+        # Empty / status state swapped in when there are no conversations —
+        # a fresh pair shows nothing until the phone grants SMS access.
+        self.conv_status = Adw.StatusPage(vexpand=True)
+        self.conv_status.add_css_class("compact")
+        self.conv_stack = Gtk.Stack(vexpand=True)
+        self.conv_stack.add_named(sc, "list")
+        self.conv_stack.add_named(self.conv_status, "status")
+        left.append(self.conv_stack)
 
         self.sel_bar = Gtk.ActionBar(revealed=False)
         self.sel_label = Gtk.Label()
@@ -572,8 +580,31 @@ class OmalinkWindow(Adw.ApplicationWindow):
                 self.conv_list.append(row)
                 if conv.thread_id == selected:
                     self.conv_list.select_row(row)
+            self._update_conv_empty_state(len(convs))
         finally:
             self._suppress_select = False
+
+    def _update_conv_empty_state(self, count):
+        if count > 0:
+            self.conv_stack.set_visible_child_name("list")
+            return
+        self.conv_stack.set_visible_child_name("status")
+        if not self.kdec.device_id:
+            self.conv_status.set_icon_name("phone-disabled-symbolic")
+            self.conv_status.set_title("No phone connected")
+            self.conv_status.set_description(
+                "Pair your phone in the KDE Connect app, then press refresh.")
+        elif not self.kdec.is_reachable:
+            self.conv_status.set_icon_name("network-cellular-offline-symbolic")
+            self.conv_status.set_title("Phone unreachable")
+            self.conv_status.set_description(
+                "Make sure the phone is on the same Wi-Fi and awake, then refresh.")
+        else:
+            self.conv_status.set_icon_name("chat-message-new-symbolic")
+            self.conv_status.set_title("No conversations")
+            self.conv_status.set_description(
+                "If this is a new pairing, open KDE Connect on the phone and grant "
+                "SMS, Contacts, and Notification access — then press refresh.")
 
     # -- multi-select -----------------------------------------------------
 

@@ -96,6 +96,23 @@ Findings:
 - [ ] **F3: auto-install is interactive-only** — `sudo pacman` can't
       run unattended; fine for a real user, but document that the
       first run needs a sudo password.
-- [ ] TODO (next): reinstall deps, re-pair, first app launch — observe
-      empty state with no device, then raw-number window before
-      contacts sync.
+- [ ] **F5: phone-initiated pairing is flaky** — the request from the
+      phone timed out before reaching the daemon
+      (`isPairRequestedByPeer` stayed false). Pairing succeeded only by
+      initiating from the PC (`kdeconnect-cli --pair`) and accepting on
+      the phone. The doctor should push a pair request from the PC, not
+      just open the UI and wait.
+- [ ] **F6: reinstalling the phone app changes the device id** — the
+      old pairing (`ddbade19…`) lingered as a stale "paired but
+      unreachable" entry alongside the new one. Harmless but confusing;
+      omalink picks the reachable device so it's fine, but the doctor
+      could offer to forget stale unpaired-unreachable devices.
+- [x] **F4 (fixed): first-run empty state was a blank window** — no
+      device line, no "grant SMS on the phone" hint, nothing. A fresh
+      pair doesn't expose the conversations path until the phone grants
+      SMS/contacts/notification permissions, so the list is genuinely
+      empty and the app said nothing. Adding a guided empty state.
+- [ ] **F7: fresh pair needs phone-side permission grants** — SMS,
+      Contacts, Notifications, and Storage must be granted in the KDE
+      Connect Android app before the app shows anything. Document this
+      and reflect it in the empty state.
