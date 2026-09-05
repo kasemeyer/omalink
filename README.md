@@ -36,6 +36,20 @@ cp data/omalink.desktop ~/.local/share/applications/
   the call log or dialing, so this tab only shows events that arrive while
   the app is running.
 
+## Roadmap
+
+- [x] Adaptive layout for tiling: notification sidebar collapses to an
+  overlay (pin/unpin via the header button), conversation list and thread
+  collapse to back-button navigation when narrow
+- [ ] MMS attachments: download/display incoming
+  (`conversations.requestAttachmentFile`) and send outgoing (the
+  attachment `av` argument on `replyToConversation`/`sendWithoutConversation`)
+- [ ] Photos tab via the sftp plugin (mount phone, browse `DCIM/Camera`)
+- [ ] Media player card (`mprisremote` plugin)
+- [ ] Inline reply to app notifications (`notification.sendReply`)
+- [ ] Screen mirroring via scrcpy
+- [ ] Omarchy theme integration
+
 ## How it talks to the phone
 
 Everything goes through `kdeconnectd`'s session D-Bus API

@@ -3,6 +3,10 @@
 Left sidebar: device name, connection state, battery, phone notifications.
 Main pane: Messages / Calls view switcher; Messages is a conversation
 list plus a thread view with composer.
+
+Adaptive for tiling WMs: the notifications sidebar collapses into an
+overlay below 1100px, and the conversation list / thread split collapses
+into back-button navigation below 760px.
 """
 
 import time
@@ -30,26 +34,38 @@ class OmalinkWindow(Adw.ApplicationWindow):
     def __init__(self, app, kdec, contacts):
         super().__init__(application=app, title="Omalink")
         self.set_default_size(1180, 740)
+        self.set_size_request(360, 420)
         self.kdec = kdec
         self.contacts = contacts
         self.current_thread = None
         self.call_log = []
-        self._refresh_pending = False
+        self._requested_threads = set()
+        self._suppress_select = False
+        self._conv_refresh_pending = False
+        self._thread_render_pending = False
+        self._notif_refresh_pending = False
 
         kdec.connect("device-state", lambda *a: self._refresh_device())
         kdec.connect("conversations-loaded", lambda *a: self._refresh_conversations())
         kdec.connect("message", self._on_message)
-        kdec.connect("notifications-changed", lambda *a: self._refresh_notifications())
+        kdec.connect("notifications-changed", lambda *a: self._queue_notif_refresh())
         kdec.connect("call-event", self._on_call_event)
 
-        root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        root.append(self._build_sidebar())
-        root.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
-        root.append(self._build_main())
+        self.split = Adw.OverlaySplitView(
+            sidebar=self._build_sidebar(),
+            content=self._build_main(),
+            min_sidebar_width=280,
+            max_sidebar_width=320,
+        )
+        self.set_content(self.split)
 
-        toolbar = Adw.ToolbarView()
-        toolbar.set_content(root)
-        self.set_content(toolbar)
+        bp_mid = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 1100sp"))
+        bp_mid.add_setter(self.split, "collapsed", True)
+        self.add_breakpoint(bp_mid)
+        bp_narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 760sp"))
+        bp_narrow.add_setter(self.split, "collapsed", True)
+        bp_narrow.add_setter(self.msg_split, "collapsed", True)
+        self.add_breakpoint(bp_narrow)
 
         self._refresh_device()
         self._refresh_notifications()
@@ -59,14 +75,15 @@ class OmalinkWindow(Adw.ApplicationWindow):
     # -- sidebar ----------------------------------------------------------
 
     def _build_sidebar(self):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, width_request=300)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.add_css_class("sidebar-pane")
 
         head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4,
                        margin_top=18, margin_bottom=12, margin_start=18, margin_end=18)
         title_row = Gtk.Box(spacing=8)
         title_row.append(Gtk.Image.new_from_icon_name("phone-symbolic"))
-        self.device_label = Gtk.Label(label="No device", xalign=0)
+        self.device_label = Gtk.Label(label="No device", xalign=0,
+                                      ellipsize=Pango.EllipsizeMode.END)
         self.device_label.add_css_class("title-2")
         title_row.append(self.device_label)
         head.append(title_row)
@@ -124,6 +141,16 @@ class OmalinkWindow(Adw.ApplicationWindow):
         else:
             self.battery_label.set_label("")
 
+    def _queue_notif_refresh(self):
+        if not self._notif_refresh_pending:
+            self._notif_refresh_pending = True
+            GLib.timeout_add(300, self._do_notif_refresh)
+
+    def _do_notif_refresh(self):
+        self._notif_refresh_pending = False
+        self._refresh_notifications()
+        return False
+
     def _refresh_notifications(self):
         self.notif_list.remove_all()
         for n in self.kdec.active_notifications():
@@ -156,13 +183,13 @@ class OmalinkWindow(Adw.ApplicationWindow):
 
     def _on_dismiss_notification(self, _btn, nid):
         self.kdec.dismiss_notification(nid)
-        GLib.timeout_add(300, lambda: self._refresh_notifications() or False)
+        self._queue_notif_refresh()
 
     def _on_clear_notifications(self, _btn):
         for n in self.kdec.active_notifications():
             if n.dismissable:
                 self.kdec.dismiss_notification(n.nid)
-        GLib.timeout_add(400, lambda: self._refresh_notifications() or False)
+        self._queue_notif_refresh()
 
     # -- main pane --------------------------------------------------------
 
@@ -175,18 +202,23 @@ class OmalinkWindow(Adw.ApplicationWindow):
 
         switcher = Adw.ViewSwitcher(stack=self.stack, policy=Adw.ViewSwitcherPolicy.WIDE)
         header = Adw.HeaderBar(title_widget=switcher)
+        toggle = Gtk.Button(icon_name="sidebar-show-symbolic",
+                            tooltip_text="Notifications")
+        toggle.connect("clicked", self._on_toggle_sidebar)
+        header.pack_start(toggle)
 
         view = Adw.ToolbarView(hexpand=True)
         view.add_top_bar(header)
         view.set_content(self.stack)
         return view
 
+    def _on_toggle_sidebar(self, _btn):
+        self.split.set_show_sidebar(not self.split.get_show_sidebar())
+
     # -- messages ---------------------------------------------------------
 
     def _build_messages(self):
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-
-        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, width_request=330)
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         head = Gtk.Box(margin_top=10, margin_bottom=6, margin_start=14, margin_end=10)
         lbl = Gtk.Label(label="Messages", xalign=0, hexpand=True)
         lbl.add_css_class("title-3")
@@ -205,8 +237,6 @@ class OmalinkWindow(Adw.ApplicationWindow):
         sc = Gtk.ScrolledWindow(vexpand=True, child=self.conv_list)
         sc.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         left.append(sc)
-        box.append(left)
-        box.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
 
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
         self.thread_header = Gtk.Box(spacing=10, margin_top=10, margin_bottom=10,
@@ -214,10 +244,12 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self.thread_avatar = Adw.Avatar(size=36, show_initials=True)
         self.thread_header.append(self.thread_avatar)
         tv = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.thread_name = Gtk.Label(label="Select a conversation", xalign=0)
+        self.thread_name = Gtk.Label(label="Select a conversation", xalign=0,
+                                     ellipsize=Pango.EllipsizeMode.END)
         self.thread_name.add_css_class("title-4")
         tv.append(self.thread_name)
-        self.thread_sub = Gtk.Label(label="", xalign=0)
+        self.thread_sub = Gtk.Label(label="", xalign=0,
+                                    ellipsize=Pango.EllipsizeMode.END)
         self.thread_sub.add_css_class("dim-label")
         self.thread_sub.add_css_class("caption")
         tv.append(self.thread_sub)
@@ -243,73 +275,96 @@ class OmalinkWindow(Adw.ApplicationWindow):
         send.connect("clicked", self._on_send)
         composer.append(send)
         right.append(composer)
-        box.append(right)
-        return box
+
+        self.msg_split = Adw.NavigationSplitView(
+            sidebar=Adw.NavigationPage(child=left, title="Messages"),
+            content=Adw.NavigationPage(child=right, title="Conversation"),
+            min_sidebar_width=280,
+            max_sidebar_width=360,
+        )
+        return self.msg_split
 
     def _on_message(self, _kdec, msg):
-        if not self._refresh_pending:
-            self._refresh_pending = True
-            GLib.timeout_add(200, self._debounced_refresh)
-        if msg.thread_id == self.current_thread:
-            self._render_thread()
+        if not self._conv_refresh_pending:
+            self._conv_refresh_pending = True
+            GLib.timeout_add(250, self._do_conv_refresh)
+        if msg.thread_id == self.current_thread and not self._thread_render_pending:
+            self._thread_render_pending = True
+            GLib.timeout_add(150, self._do_thread_render)
 
-    def _debounced_refresh(self):
-        self._refresh_pending = False
+    def _do_conv_refresh(self):
+        self._conv_refresh_pending = False
         self._refresh_conversations()
+        return False
+
+    def _do_thread_render(self):
+        self._thread_render_pending = False
+        self._render_thread()
         return False
 
     def _refresh_conversations(self):
         selected = self.current_thread
-        self.conv_list.remove_all()
-        convs = sorted(
-            (c for c in self.kdec.conversations.values() if c.last_message),
-            key=lambda c: c.last_message.date, reverse=True,
-        )[:150]
-        for conv in convs:
-            last = conv.last_message
-            row = Gtk.ListBoxRow()
-            row.thread_id = conv.thread_id
-            outer = Gtk.Box(spacing=10, margin_top=8, margin_bottom=8,
-                            margin_start=8, margin_end=8)
-            avatar = Adw.Avatar(size=38, show_initials=True,
-                                text=self.contacts.display(conv.addresses))
-            outer.append(avatar)
-            inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
-            top = Gtk.Box()
-            name = Gtk.Label(label=self.contacts.display(conv.addresses), xalign=0,
-                             hexpand=True, ellipsize=Pango.EllipsizeMode.END)
-            name.add_css_class("heading")
-            top.append(name)
-            when = Gtk.Label(label=_fmt_time(last.date))
-            when.add_css_class("caption")
-            when.add_css_class("dim-label")
-            top.append(when)
-            inner.append(top)
-            snippet = " ".join(
-                (last.body or ("[attachment]" if last.has_attachments else "")).split()
-            )
-            sn = Gtk.Label(label=snippet, xalign=0, ellipsize=Pango.EllipsizeMode.END,
-                           single_line_mode=True)
-            sn.add_css_class("dim-label")
-            inner.append(sn)
-            outer.append(inner)
-            row.set_child(outer)
-            self.conv_list.append(row)
-            if conv.thread_id == selected:
-                self.conv_list.select_row(row)
+        self._suppress_select = True
+        try:
+            self.conv_list.remove_all()
+            convs = sorted(
+                (c for c in self.kdec.conversations.values() if c.last_message),
+                key=lambda c: c.last_message.date, reverse=True,
+            )[:150]
+            for conv in convs:
+                last = conv.last_message
+                row = Gtk.ListBoxRow()
+                row.thread_id = conv.thread_id
+                outer = Gtk.Box(spacing=10, margin_top=8, margin_bottom=8,
+                                margin_start=8, margin_end=8)
+                avatar = Adw.Avatar(size=38, show_initials=True,
+                                    text=self.contacts.display(conv.addresses))
+                outer.append(avatar)
+                inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+                top = Gtk.Box()
+                name = Gtk.Label(label=self.contacts.display(conv.addresses), xalign=0,
+                                 hexpand=True, ellipsize=Pango.EllipsizeMode.END)
+                name.add_css_class("heading")
+                top.append(name)
+                when = Gtk.Label(label=_fmt_time(last.date))
+                when.add_css_class("caption")
+                when.add_css_class("dim-label")
+                top.append(when)
+                inner.append(top)
+                snippet = " ".join(
+                    (last.body or ("[attachment]" if last.has_attachments else "")).split()
+                )
+                sn = Gtk.Label(label=snippet, xalign=0,
+                               ellipsize=Pango.EllipsizeMode.END, single_line_mode=True)
+                sn.add_css_class("dim-label")
+                inner.append(sn)
+                outer.append(inner)
+                row.set_child(outer)
+                self.conv_list.append(row)
+                if conv.thread_id == selected:
+                    self.conv_list.select_row(row)
+        finally:
+            self._suppress_select = False
 
     def _on_conversation_selected(self, _list, row):
-        if row is None:
+        if row is None or self._suppress_select:
+            return
+        if row.thread_id == self.current_thread:
             return
         self.current_thread = row.thread_id
-        conv = self.kdec.conversations[row.thread_id]
+        conv = self.kdec.conversations.get(row.thread_id)
+        if not conv:
+            return
         display = self.contacts.display(conv.addresses)
         self.thread_name.set_label(display)
         self.thread_avatar.set_text(display)
         raw = ", ".join(conv.addresses)
         self.thread_sub.set_label(raw if raw != display else "")
-        self.kdec.request_conversation(row.thread_id)
+        if row.thread_id not in self._requested_threads:
+            self._requested_threads.add(row.thread_id)
+            self.kdec.request_conversation(row.thread_id)
         self._render_thread()
+        self.msg_split.set_show_content(True)
 
     def _render_thread(self):
         child = self.bubble_box.get_first_child()
@@ -344,7 +399,6 @@ class OmalinkWindow(Adw.ApplicationWindow):
             return
         self.kdec.reply_to_conversation(conv.thread_id, text)
         self.entry.set_text("")
-        GLib.timeout_add(1500, lambda: self.kdec.request_conversation(self.current_thread) or False)
 
     def _on_compose(self, _btn):
         dialog = Adw.AlertDialog(heading="New message",
