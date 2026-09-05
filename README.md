@@ -30,9 +30,11 @@ bin/omalink
 Optional install:
 
 ```bash
-./install.sh   # symlink + desktop entry + theme template
-cp data/omalink.desktop ~/.local/share/applications/
+./install.sh   # symlink onto PATH + desktop entry + Omarchy theme template
 ```
+
+Reverse it with `./uninstall.sh` (add `--purge` to also drop the
+hidden-thread list). The kdeconnect pairing is left untouched.
 
 ## Layout
 
