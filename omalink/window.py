@@ -810,18 +810,34 @@ class OmalinkWindow(Adw.ApplicationWindow):
         pic.set_content_fit(Gtk.ContentFit.CONTAIN)
         pic.set_hexpand(True)
         pic.set_vexpand(True)
+
+        # A real toplevel window (not Adw.Dialog) so the tiling WM manages
+        # it: Hyprland tiles it, focus borders apply, and the standard
+        # close keybind works.
+        win = Adw.Window(title=os.path.basename(file_path),
+                         application=self.get_application())
+        w, h = texture.get_width(), texture.get_height()
+        scale = min(1.0, 1100 / max(w, 1), 800 / max(h, 1))
+        win.set_default_size(max(int(w * scale), 420), max(int(h * scale), 320) + 46)
+
         header = Adw.HeaderBar()
         save = Gtk.Button(icon_name="document-save-symbolic", tooltip_text="Save as…")
-        save.connect("clicked", self._on_save_image, file_path)
+        save.connect("clicked", self._on_save_image, file_path, win)
         header.pack_start(save)
         view = Adw.ToolbarView(content=pic)
         view.add_top_bar(header)
-        dialog = Adw.Dialog(title="Image", content_width=860, content_height=680)
-        dialog.set_child(view)
-        dialog.present(self)
+        win.set_content(view)
+
+        keys = Gtk.EventControllerKey()
+        keys.connect(
+            "key-pressed",
+            lambda _c, keyval, *_a: win.close() or True
+            if keyval == Gdk.KEY_Escape else False)
+        win.add_controller(keys)
+        win.present()
         return True
 
-    def _on_save_image(self, _btn, file_path):
+    def _on_save_image(self, _btn, file_path, parent):
         def done(dialog, result):
             try:
                 dest = dialog.save_finish(result)
@@ -831,7 +847,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
             self.toasts.add_toast(Adw.Toast(title="Image saved", timeout=2))
 
         fd = Gtk.FileDialog(initial_name=os.path.basename(file_path) + ".jpg")
-        fd.save(self, None, done)
+        fd.save(parent, None, done)
 
     def _scroll_to_bottom(self):
         adj = self.thread_scroll.get_vadjustment()
