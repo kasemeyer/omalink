@@ -718,7 +718,10 @@ class OmalinkWindow(Adw.ApplicationWindow):
     def _on_sftp_mounted(self, _kdec, ok, mount_point):
         if not ok:
             self.photos_stack.set_visible_child_name("empty")
-            self.toasts.add_toast(Adw.Toast(title="Couldn't mount the phone", timeout=3))
+            err = self.kdec.sftp_mount_error() or "Couldn't mount the phone"
+            if "sshfs" in err:
+                err += " — install it: sudo pacman -S sshfs"
+            self.toasts.add_toast(Adw.Toast(title=err, timeout=6))
             return
         camera = None
         for name, path in self.kdec.sftp_directories().items():

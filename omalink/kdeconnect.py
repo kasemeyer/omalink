@@ -411,6 +411,14 @@ class KdeConnect(GObject.Object):
 
         self.sftp.call("mountAndWait", None, Gio.DBusCallFlags.NONE, 30000, None, done)
 
+    def sftp_mount_error(self):
+        try:
+            return self.sftp.call_sync(
+                "getMountError", None, Gio.DBusCallFlags.NONE, -1, None
+            ).unpack()[0]
+        except GLib.Error:
+            return ""
+
     def sftp_directories(self):
         """Friendly name -> absolute path of browseable phone directories."""
         try:
