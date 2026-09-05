@@ -58,6 +58,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self._pending_downloads = {}
         self._hidden = _load_hidden()
         self._show_hidden = False
+        self._multi_mode = False
         self._outgoing_attachments = []
         self._suppress_select = False
         self._conv_refresh_pending = False
@@ -347,12 +348,25 @@ class OmalinkWindow(Adw.ApplicationWindow):
         head.append(compose)
         left.append(head)
 
-        self.conv_list = Gtk.ListBox()
+        self.conv_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.MULTIPLE)
         self.conv_list.add_css_class("navigation-sidebar")
-        self.conv_list.connect("row-selected", self._on_conversation_selected)
+        self.conv_list.connect("selected-rows-changed", self._on_selection_changed)
         sc = Gtk.ScrolledWindow(vexpand=True, child=self.conv_list)
         sc.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         left.append(sc)
+
+        self.sel_bar = Gtk.ActionBar(revealed=False)
+        self.sel_label = Gtk.Label()
+        self.sel_bar.pack_start(self.sel_label)
+        sel_cancel = Gtk.Button(label="Cancel")
+        sel_cancel.add_css_class("flat")
+        sel_cancel.connect("clicked", lambda *a: self._exit_multi_select())
+        self.sel_bar.pack_end(sel_cancel)
+        self.sel_hide_btn = Gtk.Button(label="Hide")
+        self.sel_hide_btn.add_css_class("suggested-action")
+        self.sel_hide_btn.connect("clicked", self._on_bulk_hide)
+        self.sel_bar.pack_end(self.sel_hide_btn)
+        left.append(self.sel_bar)
 
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
         self.thread_header = Gtk.Box(spacing=10, margin_top=10, margin_bottom=10,
@@ -489,6 +503,8 @@ class OmalinkWindow(Adw.ApplicationWindow):
         return False
 
     def _refresh_conversations(self):
+        if self._multi_mode:
+            return  # don't wipe an in-progress selection; catch up on exit
         selected = self.current_thread
         self._suppress_select = True
         try:
@@ -509,7 +525,16 @@ class OmalinkWindow(Adw.ApplicationWindow):
                                 margin_start=8, margin_end=8)
                 avatar = Adw.Avatar(size=38, show_initials=True,
                                     text=self.contacts.display(conv.addresses))
-                outer.append(avatar)
+                check = Gtk.Image.new_from_icon_name("object-select-symbolic")
+                check.add_css_class("selection-check")
+                check.set_visible(False)
+                overlay = Gtk.Overlay(child=avatar)
+                overlay.add_overlay(check)
+                row.check = check
+                gesture = Gtk.GestureClick()
+                gesture.connect("pressed", self._on_avatar_pressed, row)
+                overlay.add_controller(gesture)
+                outer.append(overlay)
                 inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
                 top = Gtk.Box()
                 name = Gtk.Label(label=self.contacts.display(conv.addresses), xalign=0,
@@ -536,9 +561,69 @@ class OmalinkWindow(Adw.ApplicationWindow):
         finally:
             self._suppress_select = False
 
-    def _on_conversation_selected(self, _list, row):
-        if row is None or self._suppress_select:
+    # -- multi-select -----------------------------------------------------
+
+    def _on_avatar_pressed(self, gesture, _n, _x, _y, row):
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        self._multi_mode = True
+        if row.is_selected():
+            self.conv_list.unselect_row(row)
+        else:
+            self.conv_list.select_row(row)
+
+    def _on_selection_changed(self, listbox):
+        if self._suppress_select:
             return
+        rows = listbox.get_selected_rows()
+        if len(rows) > 1:
+            self._multi_mode = True
+        if not rows:
+            self._multi_mode = False
+        child = listbox.get_first_child()
+        while child:
+            if hasattr(child, "check"):
+                child.check.set_visible(self._multi_mode and child.is_selected())
+            child = child.get_next_sibling()
+        self.sel_bar.set_revealed(self._multi_mode)
+        if self._multi_mode:
+            n = len(rows)
+            self.sel_label.set_label(f"{n} selected")
+            all_hidden = all(r.thread_id in self._hidden for r in rows) if rows else False
+            self.sel_hide_btn.set_label("Unhide" if all_hidden else "Hide")
+        elif len(rows) == 1:
+            self._open_thread(rows[0])
+
+    def _exit_multi_select(self):
+        self._multi_mode = False
+        self._suppress_select = True
+        self.conv_list.unselect_all()
+        self._suppress_select = False
+        self.sel_bar.set_revealed(False)
+        child = self.conv_list.get_first_child()
+        while child:
+            if hasattr(child, "check"):
+                child.check.set_visible(False)
+            child = child.get_next_sibling()
+        self._refresh_conversations()
+
+    def _on_bulk_hide(self, _btn):
+        rows = self.conv_list.get_selected_rows()
+        if not rows:
+            return
+        tids = [r.thread_id for r in rows]
+        if all(t in self._hidden for t in tids):
+            self._hidden.difference_update(tids)
+            msg = f"{len(tids)} conversations unhidden"
+        else:
+            self._hidden.update(tids)
+            msg = f"{len(tids)} conversations hidden"
+            if self.current_thread in self._hidden:
+                self._clear_thread_pane()
+        self._save_hidden()
+        self._exit_multi_select()
+        self.toasts.add_toast(Adw.Toast(title=msg, timeout=2))
+
+    def _open_thread(self, row):
         if row.thread_id == self.current_thread:
             return
         self.current_thread = row.thread_id
@@ -911,6 +996,13 @@ def load_css():
         .attachment label { padding: 8px 12px; }
         .success { color: @success_color; }
         .hidden-thread { opacity: 0.55; }
+        .selection-check {
+            background-color: alpha(@accent_bg_color, 0.85);
+            color: @accent_fg_color;
+            border-radius: 9999px;
+            min-width: 38px;
+            min-height: 38px;
+        }
     """)
     Gtk.StyleContext.add_provider_for_display(
         Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
