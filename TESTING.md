@@ -112,7 +112,16 @@ Findings:
       pair doesn't expose the conversations path until the phone grants
       SMS/contacts/notification permissions, so the list is genuinely
       empty and the app said nothing. Adding a guided empty state.
-- [ ] **F7: fresh pair needs phone-side permission grants** — SMS,
+- [x] **F7 (fixed): fresh pair needs phone-side permission grants** — SMS,
       Contacts, Notifications, and Storage must be granted in the KDE
       Connect Android app before the app shows anything. Document this
       and reflect it in the empty state.
+
+## Run 1 outcome
+
+End-to-end works after a from-scratch teardown. Bugs found and fixed
+(F2, F4, F5, F6, F7): the fresh-pair path — attach to the reachable
+device, guided empty state, PC-initiated pairing, auto contacts sync —
+now works without hand-holding. Remaining: F1 (cosmetic), F3
+(documented). Not yet tested this run: bar plugin reinstall, Photos
+mount, mirror wireless setup from scratch.

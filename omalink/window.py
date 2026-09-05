@@ -71,6 +71,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
         kdec.connect("conversations-loaded", lambda *a: self._refresh_conversations())
         kdec.connect("message", self._on_message)
         kdec.connect("attachment-received", self._on_attachment_received)
+        kdec.connect("contacts-synced", self._on_contacts_synced)
         kdec.connect("notifications-changed", lambda *a: self._queue_notif_refresh())
         kdec.connect("call-event", self._on_call_event)
         kdec.connect("media-changed", lambda *a: self._refresh_media())
@@ -505,6 +506,15 @@ class OmalinkWindow(Adw.ApplicationWindow):
             self.msg_split.set_show_content(False)
         self._save_hidden()
         self._refresh_conversations()
+
+    def _on_contacts_synced(self, _kdec):
+        # vcards just landed for a fresh pair — reload names and redraw.
+        self.contacts.reload(self.kdec.device_id)
+        self._refresh_conversations()
+        if self.current_thread is not None:
+            conv = self.kdec.conversations.get(self.current_thread)
+            if conv:
+                self.thread_name.set_label(self.contacts.display(conv.addresses))
 
     def _on_message(self, _kdec, msg):
         # A genuinely new incoming message resurfaces a hidden thread

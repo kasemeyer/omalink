@@ -46,6 +46,7 @@ BATTERY_IFACE = "org.kde.kdeconnect.device.battery"
 SMS_IFACE = "org.kde.kdeconnect.device.sms"
 CONVERSATIONS_IFACE = "org.kde.kdeconnect.device.conversations"
 NOTIFICATIONS_IFACE = "org.kde.kdeconnect.device.notifications"
+CONTACTS_IFACE = "org.kde.kdeconnect.device.contacts"
 NOTIFICATION_IFACE = "org.kde.kdeconnect.device.notifications.notification"
 TELEPHONY_IFACE = "org.kde.kdeconnect.device.telephony"
 MPRIS_IFACE = "org.kde.kdeconnect.device.mprisremote"
@@ -136,6 +137,7 @@ class KdeConnect(GObject.Object):
         "attachment-received": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
         "notifications-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "call-event": (GObject.SignalFlags.RUN_FIRST, None, (str, str, str)),
+        "contacts-synced": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "media-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "sftp-mounted": (GObject.SignalFlags.RUN_FIRST, None, (bool, str)),
     }
@@ -186,6 +188,7 @@ class KdeConnect(GObject.Object):
         )
         self.media = _proxy(self.bus, f"{self.device_path}/mprisremote", MPRIS_IFACE)
         self.sftp = _proxy(self.bus, f"{self.device_path}/sftp", SFTP_IFACE)
+        self.contacts = _proxy(self.bus, f"{self.device_path}/contacts", CONTACTS_IFACE)
         self.media.connect("g-properties-changed", lambda *a: self.emit("media-changed"))
         self.bus.signal_subscribe(
             SERVICE, MPRIS_IFACE, "propertiesChanged", f"{self.device_path}/mprisremote",
@@ -203,6 +206,15 @@ class KdeConnect(GObject.Object):
             SERVICE, NOTIFICATIONS_IFACE, None, f"{self.device_path}/notifications", None,
             Gio.DBusSignalFlags.NONE, lambda *a: self.emit("notifications-changed"),
         )
+        # Contacts sync — a fresh pair has no local vcards until requested,
+        # so names show as raw numbers. Kick a sync and reload when it lands.
+        self.bus.signal_subscribe(
+            SERVICE, CONTACTS_IFACE, "localCacheSynchronized",
+            f"{self.device_path}/contacts", None, Gio.DBusSignalFlags.NONE,
+            lambda *a: self.emit("contacts-synced"),
+        )
+        self.contacts.call("synchronizeRemoteWithLocal", None,
+                           Gio.DBusCallFlags.NONE, -1, None, None)
         self.bus.signal_subscribe(
             SERVICE, TELEPHONY_IFACE, "callReceived", f"{self.device_path}/telephony", None,
             Gio.DBusSignalFlags.NONE, self._on_call_signal,
