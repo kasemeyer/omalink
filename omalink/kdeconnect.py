@@ -153,6 +153,8 @@ class KdeConnect(GObject.Object):
         self.sms = None
         self.notifications = None
         self.conversations: dict[int, Conversation] = {}
+        self._refreshing = False
+        self._refresh_announced = set()
         self._attach_first_device()
 
     # -- device lifecycle -------------------------------------------------
@@ -263,6 +265,40 @@ class KdeConnect(GObject.Object):
             "requestAllConversations", None, Gio.DBusCallFlags.NONE, -1, None, None
         )
 
+    def refresh_conversations(self):
+        """Re-sync against the phone's live thread list.
+
+        The daemon caches every thread it has ever seen and never prunes,
+        so archived/deleted threads linger there (reloadPlugins doesn't
+        clear it either — verified). But when the phone answers
+        requestAllConversations it announces only threads that still
+        exist, one conversationLoaded(thread_id, count) each. So: clear
+        local state, request, collect announced ids, then rebuild from
+        the daemon cache keeping only announced threads.
+        """
+        self.conversations.clear()
+        self._refresh_announced = set()
+        self._refreshing = True
+        self.sms.call(
+            "requestAllConversations", None, Gio.DBusCallFlags.NONE, -1, None, None
+        )
+        GLib.timeout_add(6000, self._finalize_refresh)
+
+    def _finalize_refresh(self):
+        self._refreshing = False
+        try:
+            cached = self.convs_proxy.call_sync(
+                "activeConversations", None, Gio.DBusCallFlags.NONE, -1, None
+            ).unpack()[0]
+        except GLib.Error:
+            cached = []
+        for fields in cached:
+            msg = Message.from_tuple(fields)
+            if msg.thread_id in self._refresh_announced:
+                self._store(msg)
+        self.emit("conversations-loaded")
+        return False
+
     def request_conversation(self, thread_id, start=0, end=50):
         if self.convs_proxy:
             self.convs_proxy.call(
@@ -299,6 +335,14 @@ class KdeConnect(GObject.Object):
         if signal == "attachmentReceived":
             file_path, part_name = params.unpack()
             self.emit("attachment-received", file_path, part_name)
+            return
+        if signal == "conversationRemoved":
+            self.conversations.pop(params.unpack()[0], None)
+            self.emit("conversations-loaded")
+            return
+        if signal == "conversationLoaded":
+            if self._refreshing:
+                self._refresh_announced.add(params.unpack()[0])
             return
         if signal not in ("conversationCreated", "conversationUpdated"):
             return

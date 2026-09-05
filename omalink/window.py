@@ -9,6 +9,7 @@ overlay below 1100px, and the conversation list / thread split collapses
 into back-button navigation below 760px.
 """
 
+import json
 import os
 import shutil
 import time
@@ -21,6 +22,17 @@ from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
 from . import mirror
 from .kdeconnect import MESSAGE_SENT
+
+
+_HIDDEN_FILE = os.path.expanduser("~/.config/omalink/hidden_threads.json")
+
+
+def _load_hidden():
+    try:
+        with open(_HIDDEN_FILE, encoding="utf-8") as f:
+            return set(json.load(f))
+    except (OSError, ValueError):
+        return set()
 
 
 def _fmt_time(epoch_ms):
@@ -44,6 +56,8 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self.call_log = []
         self._requested_threads = set()
         self._pending_downloads = {}
+        self._hidden = _load_hidden()
+        self._show_hidden = False
         self._outgoing_attachments = []
         self._suppress_select = False
         self._conv_refresh_pending = False
@@ -81,6 +95,9 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self._refresh_media()
         if kdec.device_id:
             GLib.idle_add(lambda: kdec.load_conversations() or False)
+            # The daemon cache never prunes archived/deleted threads, so
+            # quietly re-sync against the phone's live list after launch.
+            GLib.timeout_add(2500, lambda: kdec.refresh_conversations() or False)
 
     def _attachment_cache_path(self, part_name):
         name = self.kdec.device_name or ""
@@ -312,6 +329,16 @@ class OmalinkWindow(Adw.ApplicationWindow):
         lbl = Gtk.Label(label="Messages", xalign=0, hexpand=True)
         lbl.add_css_class("title-3")
         head.append(lbl)
+        refresh = Gtk.Button(icon_name="view-refresh-symbolic",
+                             tooltip_text="Refresh from phone")
+        refresh.add_css_class("flat")
+        refresh.connect("clicked", self._on_refresh_conversations)
+        head.append(refresh)
+        show_hidden = Gtk.ToggleButton(icon_name="view-reveal-symbolic",
+                                       tooltip_text="Show hidden conversations")
+        show_hidden.add_css_class("flat")
+        show_hidden.connect("toggled", self._on_toggle_show_hidden)
+        head.append(show_hidden)
         compose = Gtk.Button(icon_name="document-edit-symbolic",
                              tooltip_text="New message")
         compose.add_css_class("circular")
@@ -343,6 +370,13 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self.thread_sub.add_css_class("caption")
         tv.append(self.thread_sub)
         self.thread_header.append(tv)
+        spacer = Gtk.Box(hexpand=True)
+        self.thread_header.append(spacer)
+        self.hide_btn = Gtk.Button(icon_name="view-conceal-symbolic",
+                                   tooltip_text="Hide conversation", visible=False)
+        self.hide_btn.add_css_class("flat")
+        self.hide_btn.connect("clicked", self._on_toggle_hide)
+        self.thread_header.append(self.hide_btn)
         right.append(self.thread_header)
         right.append(Gtk.Separator())
 
@@ -391,6 +425,51 @@ class OmalinkWindow(Adw.ApplicationWindow):
         )
         return self.msg_split
 
+    def _clear_thread_pane(self):
+        self.current_thread = None
+        self.thread_name.set_label("Select a conversation")
+        self.thread_sub.set_label("")
+        self.thread_avatar.set_text("")
+        self.hide_btn.set_visible(False)
+        child = self.bubble_box.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            self.bubble_box.remove(child)
+            child = nxt
+
+    def _on_refresh_conversations(self, _btn):
+        self._requested_threads.clear()
+        self.conv_list.remove_all()
+        self._clear_thread_pane()
+        self.kdec.refresh_conversations()
+        self.toasts.add_toast(Adw.Toast(title="Refreshing from phone…", timeout=3))
+
+    def _save_hidden(self):
+        os.makedirs(os.path.dirname(_HIDDEN_FILE), exist_ok=True)
+        with open(_HIDDEN_FILE, "w", encoding="utf-8") as f:
+            json.dump(sorted(self._hidden), f)
+
+    def _on_toggle_show_hidden(self, btn):
+        self._show_hidden = btn.get_active()
+        self._refresh_conversations()
+
+    def _on_toggle_hide(self, _btn):
+        tid = self.current_thread
+        if tid is None:
+            return
+        if tid in self._hidden:
+            self._hidden.discard(tid)
+            self.toasts.add_toast(Adw.Toast(title="Conversation unhidden", timeout=2))
+            self.hide_btn.set_icon_name("view-conceal-symbolic")
+            self.hide_btn.set_tooltip_text("Hide conversation")
+        else:
+            self._hidden.add(tid)
+            self.toasts.add_toast(Adw.Toast(title="Conversation hidden", timeout=2))
+            self._clear_thread_pane()
+            self.msg_split.set_show_content(False)
+        self._save_hidden()
+        self._refresh_conversations()
+
     def _on_message(self, _kdec, msg):
         if not self._conv_refresh_pending:
             self._conv_refresh_pending = True
@@ -415,13 +494,17 @@ class OmalinkWindow(Adw.ApplicationWindow):
         try:
             self.conv_list.remove_all()
             convs = sorted(
-                (c for c in self.kdec.conversations.values() if c.last_message),
+                (c for c in self.kdec.conversations.values()
+                 if c.last_message
+                 and (self._show_hidden or c.thread_id not in self._hidden)),
                 key=lambda c: c.last_message.date, reverse=True,
             )[:150]
             for conv in convs:
                 last = conv.last_message
                 row = Gtk.ListBoxRow()
                 row.thread_id = conv.thread_id
+                if conv.thread_id in self._hidden:
+                    row.add_css_class("hidden-thread")
                 outer = Gtk.Box(spacing=10, margin_top=8, margin_bottom=8,
                                 margin_start=8, margin_end=8)
                 avatar = Adw.Avatar(size=38, show_initials=True,
@@ -467,6 +550,12 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self.thread_avatar.set_text(display)
         raw = ", ".join(conv.addresses)
         self.thread_sub.set_label(raw if raw != display else "")
+        hidden = row.thread_id in self._hidden
+        self.hide_btn.set_visible(True)
+        self.hide_btn.set_icon_name(
+            "view-reveal-symbolic" if hidden else "view-conceal-symbolic")
+        self.hide_btn.set_tooltip_text(
+            "Unhide conversation" if hidden else "Hide conversation")
         if row.thread_id not in self._requested_threads:
             self._requested_threads.add(row.thread_id)
             self.kdec.request_conversation(row.thread_id)
@@ -821,6 +910,7 @@ def load_css():
         }
         .attachment label { padding: 8px 12px; }
         .success { color: @success_color; }
+        .hidden-thread { opacity: 0.55; }
     """)
     Gtk.StyleContext.add_provider_for_display(
         Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
