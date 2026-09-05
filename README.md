@@ -62,6 +62,19 @@ cp data/omalink.desktop ~/.local/share/applications/
   `themed/` template; the app follows theme switches live, and avatar
   colors come from the theme's ANSI palette
 - [ ] Calls: dialer and call log (blocked — KDE Connect exposes neither)
+- [ ] Decide: fork/extend the KDE Connect Android app to unlock
+  phone-side features the protocol doesn't carry today — call log +
+  dialing, notification tap-to-open actions, archive state, DND/volume
+  toggles. Options, in rough order of preference:
+  1. Upstream patches to kdeconnect-android (GPL, active project) with
+     matching kdeconnectd plugins — most work per feature, benefits
+     everyone, no maintenance burden of a fork
+  2. A small companion Android app speaking the KDE Connect protocol
+     with custom packet types (the protocol allows unknown packet
+     types; omalink reads them via a custom kdeconnectd plugin or
+     directly) — no fork, ships on our schedule
+  3. Full fork of the Android app — fastest iteration, but Play Store
+     publishing plus tracking upstream forever
 
 ## How it talks to the phone
 
