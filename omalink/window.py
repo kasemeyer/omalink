@@ -544,6 +544,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
                 overlay = Gtk.Overlay(child=avatar)
                 overlay.add_overlay(check)
                 row.check = check
+                row.avatar_overlay = overlay
                 gesture = Gtk.GestureClick()
                 gesture.connect("pressed", self._on_avatar_pressed, row)
                 overlay.add_controller(gesture)
@@ -588,16 +589,42 @@ class OmalinkWindow(Adw.ApplicationWindow):
         else:
             self.conv_list.select_row(row)
 
-    def _on_list_pressed(self, gesture, _n, _x, y):
-        """Capture-phase shift-click on a row body: range-select."""
-        if not gesture.get_current_event_state() & Gdk.ModifierType.SHIFT_MASK:
-            return
+    def _on_list_pressed(self, gesture, _n, x, y):
+        """All row clicks route through here (capture phase), because
+        ListBox's MULTIPLE mode makes plain clicks additive — a second
+        click would silently start a multi-selection. Plain click =
+        replace selection (open thread); ctrl = toggle; shift = range.
+        Clicks on the avatar circle fall through to its own gesture."""
         row = self.conv_list.get_row_at_y(int(y))
         if row is None:
             return
+        overlay = getattr(row, "avatar_overlay", None)
+        if overlay is not None:
+            ok, rect = overlay.compute_bounds(self.conv_list)
+            if (ok and rect.get_x() <= x <= rect.get_x() + rect.get_width()
+                    and rect.get_y() <= y <= rect.get_y() + rect.get_height()):
+                return
+        state = gesture.get_current_event_state()
         gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-        self._multi_mode = True
-        self._select_range_to(row)
+        if state & Gdk.ModifierType.SHIFT_MASK:
+            self._multi_mode = True
+            self._select_range_to(row)
+        elif state & Gdk.ModifierType.CONTROL_MASK:
+            self._multi_mode = True
+            self._sel_anchor = row.get_index()
+            if row.is_selected():
+                self.conv_list.unselect_row(row)
+            else:
+                self.conv_list.select_row(row)
+        elif self._multi_mode:
+            # In selection mode a plain tap keeps toggling, phone-style.
+            if row.is_selected():
+                self.conv_list.unselect_row(row)
+            else:
+                self.conv_list.select_row(row)
+        else:
+            self.conv_list.unselect_all()
+            self.conv_list.select_row(row)
 
     def _select_range_to(self, row):
         if self._sel_anchor is None:
