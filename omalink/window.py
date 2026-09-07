@@ -779,15 +779,18 @@ class OmalinkWindow(Adw.ApplicationWindow):
             "view-reveal-symbolic" if hidden else "view-conceal-symbolic")
         self.hide_btn.set_tooltip_text(
             "Unhide conversation" if hidden else "Hide conversation")
-        if row.thread_id not in self._requested_threads:
+        # Request history whenever the thread only has its one cached
+        # message — gating on "was it ever requested" was wrong: if the
+        # first request came back empty (cold daemon cache), the thread
+        # got marked done and reopening never retried, so it was stuck
+        # showing a single message. Gating on the actual message count
+        # re-requests until history loads, then stops.
+        conv = self.kdec.conversations.get(row.thread_id)
+        if conv and len(conv.messages) <= 1:
             self._requested_threads.add(row.thread_id)
             self.kdec.request_conversation(row.thread_id)
-            # Self-heal: kdeconnectd's SMS cache can go cold (it empties
-            # after the plugin re-inits post-permission-grant/reconnect),
-            # and requestConversation returns nothing for a thread the
-            # daemon has forgotten — leaving only the one cached message.
-            # If history hasn't grown shortly, warm the whole cache and
-            # retry this thread once.
+            # Self-heal for a cold daemon cache: if history still hasn't
+            # grown shortly, warm the whole cache and retry this thread.
             GLib.timeout_add(1500, self._ensure_thread_loaded, row.thread_id)
         self._render_thread()
         self.msg_split.set_show_content(True)
