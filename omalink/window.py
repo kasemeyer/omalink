@@ -121,9 +121,10 @@ class OmalinkWindow(Adw.ApplicationWindow):
         title_row = Gtk.Box(spacing=8)
         title_row.append(Gtk.Image.new_from_icon_name("phone-symbolic"))
         self.device_label = Gtk.Label(label="No device", xalign=0,
-                                      ellipsize=Pango.EllipsizeMode.END)
+                                      ellipsize=Pango.EllipsizeMode.END, hexpand=True)
         self.device_label.add_css_class("title-2")
         title_row.append(self.device_label)
+        title_row.append(self._build_device_menu())
         head.append(title_row)
 
         status_row = Gtk.Box(spacing=10)
@@ -193,9 +194,72 @@ class OmalinkWindow(Adw.ApplicationWindow):
         box.append(sc)
         return box
 
+    def _build_device_menu(self):
+        btn = Gtk.MenuButton(icon_name="open-menu-symbolic", valign=Gtk.Align.CENTER,
+                             tooltip_text="Device menu")
+        btn.add_css_class("flat")
+        popover = Gtk.Popover()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                      margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
+
+        def item(label, icon, handler):
+            b = Gtk.Button()
+            b.add_css_class("flat")
+            row = Gtk.Box(spacing=10, margin_top=2, margin_bottom=2,
+                          margin_start=6, margin_end=12)
+            row.append(Gtk.Image.new_from_icon_name(icon))
+            lbl = Gtk.Label(label=label, xalign=0, hexpand=True)
+            row.append(lbl)
+            b.set_child(row)
+            b.connect("clicked", lambda *_a: (popover.popdown(), handler()))
+            box.append(b)
+            return lbl
+
+        item("Refresh from phone", "view-refresh-symbolic",
+             lambda: self._on_refresh_conversations(None))
+        item("Sync contacts", "avatar-default-symbolic",
+             lambda: self.kdec.contacts and self.kdec.contacts.call(
+                 "synchronizeRemoteWithLocal", None, Gio.DBusCallFlags.NONE, -1, None, None))
+        item("Ring phone", "preferences-desktop-notification-bell-symbolic",
+             lambda: self.kdec.ring_phone())
+        box.append(Gtk.Separator(margin_top=4, margin_bottom=4))
+        self._pair_item = item("Unpair device", "channel-secure-symbolic",
+                               self._on_toggle_pair)
+        item("KDE Connect settings", "emblem-system-symbolic",
+             lambda: self._launch("kdeconnect-app"))
+        popover.set_child(box)
+        btn.set_popover(popover)
+        return btn
+
+    def _launch(self, cmd):
+        import subprocess
+        try:
+            subprocess.Popen([cmd], start_new_session=True)
+        except OSError:
+            self.toasts.add_toast(Adw.Toast(title=f"{cmd} is not installed", timeout=3))
+
+    def _on_toggle_pair(self):
+        if self.kdec.is_paired:
+            dialog = Adw.AlertDialog(
+                heading="Unpair device?",
+                body=f"Unpair {self.kdec.device_name or 'this phone'}? You'll need "
+                     "to pair again from the KDE Connect app to reconnect.")
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("unpair", "Unpair")
+            dialog.set_response_appearance("unpair", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.connect("response", lambda _d, r: r == "unpair" and self.kdec.unpair())
+            dialog.present(self)
+        else:
+            self.kdec.request_pairing()
+            self.toasts.add_toast(Adw.Toast(
+                title="Pair request sent — accept it on the phone", timeout=4))
+
     def _refresh_device(self):
         name = "Pixel 9 Pro" if demo.ENABLED else self.kdec.device_name
         self.device_label.set_label(name or "No device")
+        if hasattr(self, "_pair_item"):
+            self._pair_item.set_label(
+                "Unpair device" if self.kdec.is_paired else "Pair device")
         if self.kdec.is_reachable:
             self.status_label.set_label("● Connected")
             self.status_label.remove_css_class("dim-label")

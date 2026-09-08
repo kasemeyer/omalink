@@ -272,6 +272,21 @@ class KdeConnect(GObject.Object):
         return addrs[0] if addrs else ""
 
     @property
+    def is_paired(self):
+        if not self.device:
+            return False
+        v = self.device.get_cached_property("isPaired")
+        return bool(v.unpack()) if v else False
+
+    def unpair(self):
+        if self.device:
+            self.device.call("unpair", None, Gio.DBusCallFlags.NONE, -1, None, None)
+
+    def request_pairing(self):
+        if self.device:
+            self.device.call("requestPairing", None, Gio.DBusCallFlags.NONE, -1, None, None)
+
+    @property
     def battery_charge(self):
         if not self.battery:
             return -1
