@@ -998,10 +998,24 @@ class OmalinkWindow(Adw.ApplicationWindow):
     def _open_attachment(self, file_path, mime):
         if mime.startswith("image/") and self._show_image_viewer(file_path):
             return
-        # kdeconnect caches attachments with no file extension (e.g.
-        # PART_1787…), so the desktop can't resolve a default app and shows
-        # the "open with" picker. Symlink to a name carrying the right
-        # extension so it opens straight in the default video/media player.
+        gfile = Gio.File.new_for_path(file_path)
+        # Launch the default app for the MIME type directly. The cached file
+        # has no extension, so going through the portal/xdg-open shows the
+        # "open with" picker (it can't sniff a handler, and resolving a
+        # renamed symlink back to the real path defeats an extension hint).
+        # get_default_for_type keys off the MIME we already know, so a video
+        # opens straight in mpv (or whatever the user's default is).
+        base_mime = (mime or "").split(";")[0].strip()
+        if base_mime:
+            app = Gio.AppInfo.get_default_for_type(base_mime, False)
+            if app:
+                try:
+                    app.launch([gfile], None)
+                    return
+                except GLib.Error:
+                    pass
+        # No default handler — fall back to the launcher (may show a picker),
+        # with a proper extension to give it the best chance.
         launch_path = self._path_with_extension(file_path, mime)
         Gtk.FileLauncher(file=Gio.File.new_for_path(launch_path)).launch(self, None, None)
 
