@@ -10,6 +10,8 @@ into back-button navigation below 760px.
 """
 
 import json
+import hashlib
+import mimetypes
 import os
 import shutil
 import time
@@ -928,7 +930,37 @@ class OmalinkWindow(Adw.ApplicationWindow):
     def _open_attachment(self, file_path, mime):
         if mime.startswith("image/") and self._show_image_viewer(file_path):
             return
-        Gtk.FileLauncher(file=Gio.File.new_for_path(file_path)).launch(self, None, None)
+        # kdeconnect caches attachments with no file extension (e.g.
+        # PART_1787…), so the desktop can't resolve a default app and shows
+        # the "open with" picker. Symlink to a name carrying the right
+        # extension so it opens straight in the default video/media player.
+        launch_path = self._path_with_extension(file_path, mime)
+        Gtk.FileLauncher(file=Gio.File.new_for_path(launch_path)).launch(self, None, None)
+
+    # Common phone/MMS types that Python's mimetypes doesn't know.
+    _MIME_EXT_FALLBACK = {
+        "video/3gpp": ".3gp", "video/3gpp2": ".3g2", "audio/amr": ".amr",
+        "audio/aac": ".aac", "audio/x-caf": ".caf", "image/heic": ".heic",
+        "image/heif": ".heif", "video/x-matroska": ".mkv",
+    }
+
+    def _path_with_extension(self, file_path, mime):
+        if os.path.splitext(file_path)[1]:
+            return file_path
+        mime = (mime or "").split(";")[0].strip()
+        ext = mimetypes.guess_extension(mime) or self._MIME_EXT_FALLBACK.get(mime)
+        if not ext:
+            return file_path
+        link_dir = os.path.expanduser("~/.cache/omalink/open")
+        try:
+            os.makedirs(link_dir, exist_ok=True)
+            link = os.path.join(link_dir, os.path.basename(file_path) + ext)
+            if os.path.lexists(link):
+                os.remove(link)
+            os.symlink(file_path, link)
+            return link
+        except OSError:
+            return file_path
 
     def _show_image_viewer(self, file_path):
         try:
@@ -1179,9 +1211,8 @@ class OmalinkWindow(Adw.ApplicationWindow):
             if not queue:
                 return False
             path = queue.pop(0)
-            try:
-                pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 200, 200, True)
-            except GLib.Error:
+            pb = self._photo_thumbnail(path)
+            if pb is None:
                 return True
             pic = Gtk.Picture.new_for_paintable(Gdk.Texture.new_for_pixbuf(pb))
             pic.set_size_request(180, 180)
@@ -1194,6 +1225,34 @@ class OmalinkWindow(Adw.ApplicationWindow):
             return True
 
         GLib.idle_add(load_next)
+
+    def _photo_thumbnail(self, path):
+        """Scaled thumbnail for a phone photo, cached locally. Reading a
+        photo off the sshfs mount pulls the whole full-size file over the
+        network, so without a cache every visit re-downloads everything.
+        Cache key includes size+mtime so an edited/replaced photo refreshes."""
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        key = hashlib.md5(
+            f"{path}:{st.st_size}:{int(st.st_mtime)}".encode()).hexdigest()
+        cache = os.path.expanduser(f"~/.cache/omalink/thumbs/{key}.png")
+        if os.path.exists(cache):
+            try:
+                return GdkPixbuf.Pixbuf.new_from_file(cache)
+            except GLib.Error:
+                pass
+        try:
+            pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 200, 200, True)
+        except GLib.Error:
+            return None
+        try:
+            os.makedirs(os.path.dirname(cache), exist_ok=True)
+            pb.savev(cache, "png", [], [])
+        except (GLib.Error, OSError):
+            pass
+        return pb
 
     def _on_open_photo_folder(self, _btn):
         if self._camera_dir:
