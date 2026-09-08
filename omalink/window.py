@@ -863,6 +863,10 @@ class OmalinkWindow(Adw.ApplicationWindow):
     def _open_thread(self, row):
         self._sel_anchor = row.get_index()
         if row.thread_id == self.current_thread:
+            # Already the current thread — but after "back" the content pane
+            # is hidden while current_thread stays set, so re-clicking it did
+            # nothing. Re-reveal the pane instead of bailing.
+            self.msg_split.set_show_content(True)
             return
         self.current_thread = row.thread_id
         conv = self.kdec.conversations.get(row.thread_id)
