@@ -65,6 +65,8 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self._resynced_on_reach = False
         self._outgoing_attachments = []
         self._search_query = ""
+        self._att_load_queue = []
+        self._att_load_source = None
         self._suppress_select = False
         self._conv_refresh_pending = False
         self._thread_render_pending = False
@@ -914,6 +916,11 @@ class OmalinkWindow(Adw.ApplicationWindow):
         return False
 
     def _render_thread(self):
+        # Cancel any in-flight image loading from a previously opened thread.
+        if self._att_load_source:
+            GLib.source_remove(self._att_load_source)
+            self._att_load_source = None
+        self._att_load_queue = []
         child = self.bubble_box.get_first_child()
         while child:
             nxt = child.get_next_sibling()
@@ -922,6 +929,11 @@ class OmalinkWindow(Adw.ApplicationWindow):
         conv = self.kdec.conversations.get(self.current_thread)
         if not conv:
             return
+        # Build all bubbles synchronously with cheap content (text and the
+        # small embedded thumbnails), so the thread appears instantly. The
+        # expensive full-resolution image decodes are queued and filled in
+        # afterwards, newest-first, so the visible bottom loads first and the
+        # user rarely sees the rest load.
         for msg in conv.sorted_messages():
             sent = msg.type == MESSAGE_SENT
             wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4,
@@ -939,25 +951,38 @@ class OmalinkWindow(Adw.ApplicationWindow):
                 wrap.append(lbl)
             if wrap.get_first_child() is not None:
                 self.bubble_box.append(wrap)
+        # newest (appended last) upgrade first
+        self._att_load_queue.reverse()
+        if self._att_load_queue:
+            self._att_load_source = GLib.idle_add(self._load_next_attachment)
         GLib.idle_add(self._scroll_to_bottom)
+
+    def _load_next_attachment(self):
+        """Fill in one full-resolution image preview per idle cycle so the
+        thread stays responsive while images load newest-first."""
+        if not self._att_load_queue:
+            self._att_load_source = None
+            return False
+        btn, cached = self._att_load_queue.pop(0)
+        pb = self._cached_thumbnail(cached, 340, 420)
+        if pb is not None:
+            pic = Gtk.Picture.new_for_paintable(Gdk.Texture.new_for_pixbuf(pb))
+            pic.set_content_fit(Gtk.ContentFit.CONTAIN)
+            pic.set_can_shrink(False)
+            pic.set_size_request(max(pb.get_width(), 140), pb.get_height())
+            btn.set_child(pic)
+        return True
 
     def _attachment_widget(self, att):
         is_image = att.mime_type.startswith("image/")
         btn = Gtk.Button(tooltip_text=f"{att.mime_type} — click to open")
         btn.add_css_class("attachment")
-        child = None
         cached = self._attachment_cache_path(att.part_name)
-        if is_image and os.path.isfile(cached):
-            # Full file already downloaded — render a proper-resolution preview.
-            try:
-                pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(cached, 340, 420, True)
-                child = Gtk.Picture.new_for_paintable(Gdk.Texture.new_for_pixbuf(pb))
-                child.set_content_fit(Gtk.ContentFit.CONTAIN)
-                child.set_can_shrink(False)
-                child.set_size_request(max(pb.get_width(), 140), pb.get_height())
-            except GLib.Error:
-                child = None
-        if child is None and att.thumbnail_b64:
+        # Cheap placeholder now: the small embedded thumbnail if present,
+        # else a label. The full-res image (from the downloaded cache) is
+        # loaded asynchronously via the queue so the thread opens instantly.
+        child = None
+        if att.thumbnail_b64:
             try:
                 data = GLib.base64_decode(att.thumbnail_b64)
                 texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
@@ -965,15 +990,19 @@ class OmalinkWindow(Adw.ApplicationWindow):
                 child.set_size_request(180, 180)
                 child.set_content_fit(Gtk.ContentFit.COVER)
                 child.set_can_shrink(False)
-                if is_image:
-                    # Fetch the real file so the preview upgrades itself.
-                    self._download(att, action="preview")
             except GLib.Error:
                 child = None
         if child is None:
             child = Gtk.Label(label=f"📎 {att.mime_type}")
         btn.set_child(child)
         btn.connect("clicked", self._on_attachment_clicked, att)
+        if is_image:
+            if os.path.isfile(cached):
+                # Upgrade to a full-resolution preview asynchronously.
+                self._att_load_queue.append((btn, cached))
+            else:
+                # Not downloaded yet — fetch it; arrival re-renders the thread.
+                self._download(att, action="preview")
         return btn
 
     def _download(self, att, action):
@@ -1312,16 +1341,21 @@ class OmalinkWindow(Adw.ApplicationWindow):
         GLib.idle_add(load_next)
 
     def _photo_thumbnail(self, path):
-        """Scaled thumbnail for a phone photo, cached locally. Reading a
-        photo off the sshfs mount pulls the whole full-size file over the
-        network, so without a cache every visit re-downloads everything.
-        Cache key includes size+mtime so an edited/replaced photo refreshes."""
+        return self._cached_thumbnail(path, 200, 200)
+
+    def _cached_thumbnail(self, path, w, h):
+        """Scaled thumbnail cached locally as a small PNG. Decoding a
+        full-resolution image (a phone photo over sshfs, or a downloaded
+        attachment) is expensive and was being done synchronously on every
+        render/visit — the source of the multi-second stall on threads with
+        images. Scale once, reuse. Key includes size+mtime+dimensions so a
+        replaced file or a different size refreshes."""
         try:
             st = os.stat(path)
         except OSError:
             return None
         key = hashlib.md5(
-            f"{path}:{st.st_size}:{int(st.st_mtime)}".encode()).hexdigest()
+            f"{path}:{st.st_size}:{int(st.st_mtime)}:{w}x{h}".encode()).hexdigest()
         cache = os.path.expanduser(f"~/.cache/omalink/thumbs/{key}.png")
         if os.path.exists(cache):
             try:
@@ -1329,7 +1363,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
             except GLib.Error:
                 pass
         try:
-            pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 200, 200, True)
+            pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, w, h, True)
         except GLib.Error:
             return None
         try:
