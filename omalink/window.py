@@ -520,6 +520,9 @@ class OmalinkWindow(Adw.ApplicationWindow):
                                   margin_start=16, margin_end=16, valign=Gtk.Align.END)
         self.thread_scroll = Gtk.ScrolledWindow(vexpand=True, child=self.bubble_box)
         self.thread_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self._pin_bottom = True
+        self.thread_scroll.get_vadjustment().connect(
+            "value-changed", self._on_thread_scroll)
         right.append(self.thread_scroll)
 
         composer_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -921,6 +924,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
             GLib.source_remove(self._att_load_source)
             self._att_load_source = None
         self._att_load_queue = []
+        self._pin_bottom = True  # a freshly opened thread starts at newest
         child = self.bubble_box.get_first_child()
         while child:
             nxt = child.get_next_sibling()
@@ -971,6 +975,11 @@ class OmalinkWindow(Adw.ApplicationWindow):
             pic.set_can_shrink(False)
             pic.set_size_request(max(pb.get_width(), 140), pb.get_height())
             btn.set_child(pic)
+            # The new preview is taller than its placeholder; keep the view
+            # pinned to the newest message while loading unless the user
+            # scrolled up. idle_add lets layout settle before we re-scroll.
+            if self._pin_bottom:
+                GLib.idle_add(self._scroll_to_bottom)
         return True
 
     def _attachment_widget(self, att):
@@ -1128,6 +1137,14 @@ class OmalinkWindow(Adw.ApplicationWindow):
         adj = self.thread_scroll.get_vadjustment()
         adj.set_value(adj.get_upper() - adj.get_page_size())
         return False
+
+    def _on_thread_scroll(self, adj):
+        # Stay pinned to the bottom while images load, unless the user has
+        # scrolled up to read older messages. Our own scroll-to-bottom lands
+        # at distance ~0, so it keeps the pin; a real scroll-up releases it,
+        # and scrolling back to the bottom re-arms it.
+        dist = adj.get_upper() - (adj.get_value() + adj.get_page_size())
+        self._pin_bottom = dist < 60
 
     def _on_pick_attachment(self, _btn):
         Gtk.FileDialog(title="Attach files").open_multiple(self, None, self._on_files_picked)
