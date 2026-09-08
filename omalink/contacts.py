@@ -36,10 +36,12 @@ def _decode_line(prefix, line):
 class ContactBook:
     def __init__(self, device_id=None):
         self._by_number = {}
+        self._entries = []  # (name, raw_number) for the contact picker
         self.reload(device_id)
 
     def reload(self, device_id=None):
         self._by_number.clear()
+        self._entries.clear()
         if not os.path.isdir(VCARD_ROOT):
             return
         dirs = (
@@ -73,9 +75,29 @@ class ContactBook:
                 key = _normalize(n)
                 if key:
                     self._by_number[key] = name
+                    self._entries.append((name, n.strip()))
 
     def lookup(self, number):
         return self._by_number.get(_normalize(number))
+
+    def search(self, query, limit=50):
+        """Contacts whose name or number contains query. Returns
+        (name, raw_number) sorted by name, de-duplicated."""
+        q = query.strip().lower()
+        qd = re.sub(r"\D", "", q)
+        seen = set()
+        out = []
+        for name, number in sorted(self._entries, key=lambda e: e[0].lower()):
+            key = (name, _normalize(number))
+            if key in seen:
+                continue
+            if (not q or q in name.lower()
+                    or (qd and qd in re.sub(r"\D", "", number))):
+                seen.add(key)
+                out.append((name, number))
+            if len(out) >= limit:
+                break
+        return out
 
     def display(self, addresses):
         """Human-readable name for one or more raw addresses."""

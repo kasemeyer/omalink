@@ -52,6 +52,10 @@ TELEPHONY_IFACE = "org.kde.kdeconnect.device.telephony"
 MPRIS_IFACE = "org.kde.kdeconnect.device.mprisremote"
 SFTP_IFACE = "org.kde.kdeconnect.device.sftp"
 
+# Blocking D-Bus calls fail fast rather than hang the UI (or, unguarded,
+# crash) for the full 25s default when the daemon or phone is slow.
+CALL_TIMEOUT_MS = 8000
+
 MESSAGE_RECEIVED = 1
 MESSAGE_SENT = 2
 
@@ -148,12 +152,19 @@ class KdeConnect(GObject.Object):
         self.daemon = _proxy(self.bus, DAEMON_PATH, DAEMON_IFACE)
         self.daemon.connect("g-signal", self._on_daemon_signal)
 
+        # All per-device proxies default to None so the app runs cleanly
+        # with no phone attached (e.g. daemon slow at startup, or unpaired).
+        # Every accessor/method below must tolerate these being None.
         self.device_id = None
         self.device_path = None
         self.device = None
         self.battery = None
         self.sms = None
         self.notifications = None
+        self.convs_proxy = None
+        self.media = None
+        self.sftp = None
+        self.contacts = None
         self.conversations: dict[int, Conversation] = {}
         self._refreshing = False
         self._refresh_announced = set()
@@ -166,11 +177,20 @@ class KdeConnect(GObject.Object):
         # mints a new device id while the old pairing lingers as a stale
         # "paired but unreachable" entry, so picking the first *paired*
         # device can attach to the dead one. (onlyReachable, onlyPaired)
+        #
+        # Guarded: a slow/unresponsive daemon made this blocking call time
+        # out and raised an unhandled GError that crashed the app at
+        # startup. Now it fails fast (short timeout) and quietly — the app
+        # opens with the empty state, and a later deviceAdded signal
+        # re-attaches once the daemon responds.
         def query(reachable, paired):
-            return self.daemon.call_sync(
-                "devices", GLib.Variant("(bb)", (reachable, paired)),
-                Gio.DBusCallFlags.NONE, -1, None,
-            ).unpack()[0]
+            try:
+                return self.daemon.call_sync(
+                    "devices", GLib.Variant("(bb)", (reachable, paired)),
+                    Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, None,
+                ).unpack()[0]
+            except GLib.Error:
+                return []
 
         ids = query(True, True) or query(False, True)
         if ids:
@@ -274,7 +294,7 @@ class KdeConnect(GObject.Object):
             return
         try:
             cached = self.convs_proxy.call_sync(
-                "activeConversations", None, Gio.DBusCallFlags.NONE, -1, None
+                "activeConversations", None, Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, None
             ).unpack()[0]
         except GLib.Error:
             cached = []
@@ -296,6 +316,8 @@ class KdeConnect(GObject.Object):
         local state, request, collect announced ids, then rebuild from
         the daemon cache keeping only announced threads.
         """
+        if not self.sms or not self.convs_proxy:
+            return
         self.conversations.clear()
         self._refresh_announced = set()
         self._refreshing = True
@@ -308,7 +330,7 @@ class KdeConnect(GObject.Object):
         self._refreshing = False
         try:
             cached = self.convs_proxy.call_sync(
-                "activeConversations", None, Gio.DBusCallFlags.NONE, -1, None
+                "activeConversations", None, Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, None
             ).unpack()[0]
         except GLib.Error:
             cached = []
@@ -328,6 +350,8 @@ class KdeConnect(GObject.Object):
             )
 
     def reply_to_conversation(self, thread_id, text, attachment_paths=()):
+        if not self.convs_proxy:
+            return
         atts = [GLib.Variant("s", p) for p in attachment_paths]
         self.convs_proxy.call(
             "replyToConversation",
@@ -336,6 +360,8 @@ class KdeConnect(GObject.Object):
         )
 
     def send_new_sms(self, addresses, text, attachment_paths=()):
+        if not self.convs_proxy:
+            return
         addr_variants = [GLib.Variant("(s)", (a,)) for a in addresses]
         atts = [GLib.Variant("s", p) for p in attachment_paths]
         self.convs_proxy.call(
@@ -371,6 +397,8 @@ class KdeConnect(GObject.Object):
         self.emit("message", msg)
 
     def request_attachment(self, part_id, part_name):
+        if not self.convs_proxy:
+            return
         self.convs_proxy.call(
             "requestAttachmentFile",
             GLib.Variant("(xs)", (part_id, part_name)),
@@ -384,7 +412,7 @@ class KdeConnect(GObject.Object):
             return []
         try:
             ids = self.notifications.call_sync(
-                "activeNotifications", None, Gio.DBusCallFlags.NONE, -1, None
+                "activeNotifications", None, Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, None
             ).unpack()[0]
         except GLib.Error:
             return []
@@ -447,6 +475,8 @@ class KdeConnect(GObject.Object):
 
     def media_action(self, action):
         """action: Play, Pause, PlayPause, Next, Previous."""
+        if not self.media:
+            return
         self.media.call(
             "sendAction", GLib.Variant("(s)", (action,)),
             Gio.DBusCallFlags.NONE, -1, None, None,
@@ -466,6 +496,10 @@ class KdeConnect(GObject.Object):
 
     def sftp_mount(self):
         """Mount the phone filesystem; emits sftp-mounted(ok, mount_point)."""
+        if not self.sftp:
+            self.emit("sftp-mounted", False, "")
+            return
+
         def done(proxy, result):
             try:
                 ok = proxy.call_finish(result).unpack()[0]
@@ -475,7 +509,7 @@ class KdeConnect(GObject.Object):
             if ok:
                 try:
                     mp = self.sftp.call_sync(
-                        "mountPoint", None, Gio.DBusCallFlags.NONE, -1, None
+                        "mountPoint", None, Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, None
                     ).unpack()[0]
                 except GLib.Error:
                     ok = False
@@ -484,18 +518,22 @@ class KdeConnect(GObject.Object):
         self.sftp.call("mountAndWait", None, Gio.DBusCallFlags.NONE, 30000, None, done)
 
     def sftp_mount_error(self):
+        if not self.sftp:
+            return ""
         try:
             return self.sftp.call_sync(
-                "getMountError", None, Gio.DBusCallFlags.NONE, -1, None
+                "getMountError", None, Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, None
             ).unpack()[0]
         except GLib.Error:
             return ""
 
     def sftp_directories(self):
         """Friendly name -> absolute path of browseable phone directories."""
+        if not self.sftp:
+            return {}
         try:
             return self.sftp.call_sync(
-                "getDirectories", None, Gio.DBusCallFlags.NONE, -1, None
+                "getDirectories", None, Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, None
             ).unpack()[0]
         except GLib.Error:
             return {}

@@ -1,3 +1,5 @@
+import logging
+import os
 import sys
 
 import gi
@@ -12,6 +14,34 @@ from .theming import OmarchyTheme
 from .window import OmalinkWindow, load_css
 
 APP_ID = "dev.kc.Omalink"
+
+LOG_PATH = os.path.expanduser("~/.local/state/omalink/omalink.log")
+
+
+def _setup_logging():
+    """Persist tracebacks so a crash is diagnosable next time. Logs both
+    Python exceptions and GLib/GTK warnings to a rotating-ish file."""
+    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+    # Truncate if it grows past ~1 MB so it never balloons.
+    try:
+        if os.path.getsize(LOG_PATH) > 1_000_000:
+            open(LOG_PATH, "w").close()
+    except OSError:
+        pass
+    logging.basicConfig(
+        filename=LOG_PATH, level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        force=True,
+    )
+    log = logging.getLogger("omalink")
+
+    def excepthook(exc_type, exc, tb):
+        log.error("uncaught exception", exc_info=(exc_type, exc, tb))
+        sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = excepthook
+    log.info("omalink starting (pid %s)", os.getpid())
+    return log
 
 
 class OmalinkApp(Adw.Application):
@@ -31,5 +61,10 @@ class OmalinkApp(Adw.Application):
 
 
 def main():
+    log = _setup_logging()
     GLib.set_application_name("Omalink")
-    return OmalinkApp().run(sys.argv)
+    try:
+        return OmalinkApp().run(sys.argv)
+    except Exception:
+        log.exception("fatal error in main loop")
+        raise

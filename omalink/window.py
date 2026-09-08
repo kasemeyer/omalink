@@ -62,6 +62,7 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self._sel_anchor = None
         self._resynced_on_reach = False
         self._outgoing_attachments = []
+        self._search_query = ""
         self._suppress_select = False
         self._conv_refresh_pending = False
         self._thread_render_pending = False
@@ -367,6 +368,16 @@ class OmalinkWindow(Adw.ApplicationWindow):
         head.append(compose)
         left.append(head)
 
+        # Search across conversations — matches contact/group name, number,
+        # and the last-message text; also searches full history the app has
+        # loaded so far.
+        self.search_entry = Gtk.SearchEntry(
+            placeholder_text="Search messages and contacts",
+            margin_start=12, margin_end=12, margin_bottom=6)
+        self.search_entry.connect("search-changed", self._on_search_changed)
+        left.append(self.search_entry)
+        self._search_query = ""
+
         self.conv_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.MULTIPLE)
         self.conv_list.add_css_class("navigation-sidebar")
         self.conv_list.connect("selected-rows-changed", self._on_selection_changed)
@@ -535,6 +546,22 @@ class OmalinkWindow(Adw.ApplicationWindow):
             if conv:
                 self.thread_name.set_label(self.contacts.display(conv.addresses))
 
+    def _on_search_changed(self, entry):
+        self._search_query = entry.get_text().strip().lower()
+        self._refresh_conversations()
+
+    def _conv_matches(self, conv):
+        """True if the search query matches this conversation's contact
+        name, any address, or any message text the app has loaded."""
+        q = self._search_query
+        if not q:
+            return True
+        if q in self.contacts.display(conv.addresses).lower():
+            return True
+        if any(q in a.lower() for a in conv.addresses):
+            return True
+        return any(q in (m.body or "").lower() for m in conv.messages.values())
+
     def _on_message(self, _kdec, msg):
         # A genuinely new incoming message resurfaces a hidden thread
         # (like unarchiving). The age check keeps daemon re-syncs of old
@@ -571,7 +598,8 @@ class OmalinkWindow(Adw.ApplicationWindow):
             convs = sorted(
                 (c for c in self.kdec.conversations.values()
                  if c.last_message
-                 and (self._show_hidden or c.thread_id not in self._hidden)),
+                 and (self._show_hidden or c.thread_id not in self._hidden)
+                 and self._conv_matches(c)),
                 key=lambda c: c.last_message.date, reverse=True,
             )[:150]
             for conv in convs:
@@ -630,6 +658,13 @@ class OmalinkWindow(Adw.ApplicationWindow):
             self.conv_stack.set_visible_child_name("list")
             return
         self.conv_stack.set_visible_child_name("status")
+        if self._search_query:
+            self.conv_status.set_icon_name("system-search-symbolic")
+            self.conv_status.set_title("No matches")
+            self.conv_status.set_description(
+                "No conversations match your search. Try a different name, "
+                "number, or word. Open a thread first to search deeper history.")
+            return
         if not self.kdec.device_id:
             self.conv_status.set_icon_name("phone-disabled-symbolic")
             self.conv_status.set_title("No phone connected")
@@ -983,23 +1018,70 @@ class OmalinkWindow(Adw.ApplicationWindow):
 
     def _on_compose(self, _btn):
         dialog = Adw.AlertDialog(heading="New message",
-                                 body="Send an SMS to a phone number")
+                                 body="Search a contact by name, or type a number.")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        number = Gtk.Entry(placeholder_text="Phone number")
+
+        recipient = Gtk.Entry(placeholder_text="Name or phone number")
+        box.append(recipient)
+
+        # Live contact matches — pick one to fill the recipient. A number
+        # typed directly is used as-is, so unknown numbers still work.
+        results = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        results.add_css_class("boxed-list")
+        results_sc = Gtk.ScrolledWindow(child=results, min_content_height=160,
+                                        max_content_height=220, propagate_natural_height=True)
+        results_sc.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        box.append(results_sc)
+
         text = Gtk.Entry(placeholder_text="Message")
-        box.append(number)
         box.append(text)
+
+        chosen = {"number": None}
+
+        def fill_results(entry):
+            results.remove_all()
+            chosen["number"] = None
+            for name, num in self.contacts.search(entry.get_text(), limit=30):
+                row = Gtk.ListBoxRow()
+                row.number = num
+                r = Gtk.Box(spacing=8, margin_top=6, margin_bottom=6,
+                            margin_start=10, margin_end=10)
+                av = Adw.Avatar(size=28, show_initials=True, text=name)
+                r.append(av)
+                col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+                nm = Gtk.Label(label=name, xalign=0)
+                nm.add_css_class("heading")
+                col.append(nm)
+                sub = Gtk.Label(label=num, xalign=0)
+                sub.add_css_class("caption")
+                sub.add_css_class("dim-label")
+                col.append(sub)
+                r.append(col)
+                row.set_child(r)
+                results.append(row)
+
+        def on_row(_list, row):
+            if row is not None:
+                chosen["number"] = row.number
+                text.grab_focus()
+
+        recipient.connect("changed", fill_results)
+        results.connect("row-selected", on_row)
+        fill_results(recipient)
+
         dialog.set_extra_child(box)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("send", "Send")
         dialog.set_response_appearance("send", Adw.ResponseAppearance.SUGGESTED)
-        dialog.connect("response", self._on_compose_response, number, text)
+        dialog.connect("response", self._on_compose_response, recipient, text, chosen)
         dialog.present(self)
 
-    def _on_compose_response(self, _dialog, response, number, text):
+    def _on_compose_response(self, _dialog, response, recipient, text, chosen):
         if response != "send":
             return
-        num, body = number.get_text().strip(), text.get_text().strip()
+        # A picked contact wins; otherwise use whatever was typed (a number).
+        num = chosen.get("number") or recipient.get_text().strip()
+        body = text.get_text().strip()
         if num and body:
             self.kdec.send_new_sms([num], body)
 

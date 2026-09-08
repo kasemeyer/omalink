@@ -4,6 +4,18 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
+# Mirror stderr (GTK/GLib native warnings and aborts, which Python's
+# excepthook can't catch) into the same log the app writes tracebacks to,
+# so a crash is diagnosable regardless of how the app was launched.
+if os.environ.get("OMALINK_NO_LOG") != "1":
+    try:
+        log_path = os.path.expanduser("~/.local/state/omalink/omalink.log")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        _logf = open(log_path, "a", buffering=1)
+        os.dup2(_logf.fileno(), sys.stderr.fileno())
+    except OSError:
+        pass
+
 from omalink.app import main
 
 sys.exit(main())
