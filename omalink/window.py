@@ -100,11 +100,14 @@ class OmalinkWindow(Adw.ApplicationWindow):
         self._refresh_device()
         self._refresh_notifications()
         self._refresh_media()
+        # Render whatever the local cache already holds so the list appears
+        # instantly, then merge fresh data from the daemon/phone in the
+        # background (additive — doesn't clear the shown list). Pruning of
+        # archived/deleted threads is on the manual refresh button.
+        if kdec.conversations:
+            self._refresh_conversations()
         if kdec.device_id:
             GLib.idle_add(lambda: kdec.load_conversations() or False)
-            # The daemon cache never prunes archived/deleted threads, so
-            # quietly re-sync against the phone's live list after launch.
-            GLib.timeout_add(2500, lambda: kdec.refresh_conversations() or False)
 
     def _attachment_cache_path(self, part_name):
         name = self.kdec.device_name or ""

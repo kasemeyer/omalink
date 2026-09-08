@@ -31,12 +31,16 @@ conversationUpdated signal variants) is a 10-field struct:
 type: 1 = received, 2 = sent.
 """
 
+import json
+import os
 from dataclasses import dataclass, field
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, GObject
+
+CACHE_PATH = os.path.expanduser("~/.local/state/omalink/conversations.json")
 
 SERVICE = "org.kde.kdeconnect"
 DAEMON_PATH = "/modules/kdeconnect"
@@ -168,7 +172,74 @@ class KdeConnect(GObject.Object):
         self.conversations: dict[int, Conversation] = {}
         self._refreshing = False
         self._refresh_announced = set()
+        self._cache_save_pending = False
+        self._load_cache()
         self._attach_first_device()
+
+    # -- local cache ------------------------------------------------------
+    # Persist conversations to disk so the app shows messages instantly on
+    # the next open instead of waiting on a full daemon/phone re-sync. The
+    # live sync still runs in the background and updates the cache.
+
+    def _load_cache(self):
+        try:
+            with open(CACHE_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return
+        for tid_s, c in data.get("threads", {}).items():
+            try:
+                tid = int(tid_s)
+            except ValueError:
+                continue
+            conv = Conversation(tid, addresses=c.get("addresses", []))
+            for m in c.get("messages", []):
+                atts = [Attachment(*a) for a in m.get("attachments", [])]
+                conv.messages[m["uid"]] = Message(
+                    body=m.get("body", ""), addresses=m.get("addresses", []),
+                    date=m.get("date", 0), type=m.get("type", 1),
+                    thread_id=tid, uid=m["uid"], attachments=atts)
+            if conv.messages:
+                self.conversations[tid] = conv
+
+    def schedule_cache_save(self):
+        if self._cache_save_pending:
+            return
+        self._cache_save_pending = True
+        GLib.timeout_add(3000, self._do_cache_save)
+
+    def _do_cache_save(self):
+        self._cache_save_pending = False
+        # Cap per-thread history so the file stays bounded; drop attachment
+        # thumbnails if the payload would get very large.
+        threads = {}
+        for tid, conv in self.conversations.items():
+            msgs = conv.sorted_messages()[-100:]
+            threads[str(tid)] = {
+                "addresses": conv.addresses,
+                "messages": [{
+                    "body": m.body, "addresses": m.addresses, "date": m.date,
+                    "type": m.type, "uid": m.uid,
+                    "attachments": [[a.part_id, a.mime_type, a.thumbnail_b64, a.part_name]
+                                    for a in m.attachments],
+                } for m in msgs],
+            }
+        payload = {"version": 1, "threads": threads}
+        text = json.dumps(payload)
+        if len(text) > 20_000_000:  # too big — re-serialize without thumbnails
+            for t in threads.values():
+                for m in t["messages"]:
+                    m["attachments"] = [[a[0], a[1], "", a[3]] for a in m["attachments"]]
+            text = json.dumps({"version": 1, "threads": threads})
+        try:
+            os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
+            tmp = CACHE_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(tmp, CACHE_PATH)
+        except OSError:
+            pass
+        return False
 
     # -- device lifecycle -------------------------------------------------
 
@@ -321,19 +392,19 @@ class KdeConnect(GObject.Object):
         )
 
     def refresh_conversations(self):
-        """Re-sync against the phone's live thread list.
+        """Re-sync against the phone's live thread list and prune threads
+        the phone no longer has (archived/deleted).
 
         The daemon caches every thread it has ever seen and never prunes,
-        so archived/deleted threads linger there (reloadPlugins doesn't
-        clear it either — verified). But when the phone answers
-        requestAllConversations it announces only threads that still
-        exist, one conversationLoaded(thread_id, count) each. So: clear
-        local state, request, collect announced ids, then rebuild from
-        the daemon cache keeping only announced threads.
+        so archived/deleted threads linger. But when the phone answers
+        requestAllConversations it announces only threads that still exist,
+        one conversationLoaded(thread_id, count) each. We collect those
+        announced ids, then in _finalize drop any local thread not among
+        them — without clearing first, so loaded per-thread history (and
+        the on-disk cache) survives for the threads that remain.
         """
         if not self.sms or not self.convs_proxy:
             return
-        self.conversations.clear()
         self._refresh_announced = set()
         self._refreshing = True
         self.sms.call(
@@ -343,6 +414,13 @@ class KdeConnect(GObject.Object):
 
     def _finalize_refresh(self):
         self._refreshing = False
+        # Drop threads the phone didn't announce (archived/deleted), but only
+        # if the phone actually announced something — an empty set means the
+        # sync failed and we must not wipe everything.
+        if self._refresh_announced:
+            for tid in [t for t in self.conversations
+                        if t not in self._refresh_announced]:
+                del self.conversations[tid]
         try:
             cached = self.convs_proxy.call_sync(
                 "activeConversations", None, Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, None
@@ -353,6 +431,7 @@ class KdeConnect(GObject.Object):
             msg = Message.from_tuple(fields)
             if msg.thread_id in self._refresh_announced:
                 self._store(msg)
+        self.schedule_cache_save()
         self.emit("conversations-loaded")
         return False
 
@@ -390,6 +469,7 @@ class KdeConnect(GObject.Object):
         conv.messages[msg.uid] = msg
         if msg.addresses:
             conv.addresses = msg.addresses
+        self.schedule_cache_save()
         return conv
 
     def _on_conversation_signal(self, bus, sender, path, iface, signal, params):
@@ -399,6 +479,7 @@ class KdeConnect(GObject.Object):
             return
         if signal == "conversationRemoved":
             self.conversations.pop(params.unpack()[0], None)
+            self.schedule_cache_save()
             self.emit("conversations-loaded")
             return
         if signal == "conversationLoaded":
