@@ -10,6 +10,18 @@ required).
 Pairs with the [Omalink bar](https://github.com/kasemeyer/omalink-bar) widget,
 which puts phone status and quick actions in the Omarchy bar.
 
+> [!IMPORTANT]
+> **RCS is not supported — this is a KDE Connect limitation, not Omalink's.**
+> KDE Connect reads and writes only Android's SMS/MMS database. RCS chats
+> (the default in Google Messages for many contacts) live in a separate
+> store that Android does not expose to third-party apps, so RCS messages
+> are invisible to KDE Connect and therefore to Omalink. Symptom: a
+> conversation looks "stuck" at the last SMS/MMS while the real chat has
+> moved to RCS. There is no API fix. For RCS conversations, use the
+> **Mirror** button (scrcpy) to drive Google Messages on the phone
+> directly. SMS/MMS contacts work fully. Sending also uses SMS/MMS only,
+> so photo attachments are downscaled to fit MMS size limits.
+
 ## Requirements
 
 - `kdeconnect` (daemon only — `kdeconnectd` runs headless)
