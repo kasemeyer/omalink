@@ -443,10 +443,15 @@ class KdeConnect(GObject.Object):
                 Gio.DBusCallFlags.NONE, -1, None, None,
             )
 
+    def _attachment_urls(self, attachment_paths):
+        # The plugin's parameter is attachmentUrls — hand it file:// URLs.
+        return [GLib.Variant("s", Gio.File.new_for_path(p).get_uri())
+                for p in attachment_paths]
+
     def reply_to_conversation(self, thread_id, text, attachment_paths=()):
         if not self.convs_proxy:
             return
-        atts = [GLib.Variant("s", p) for p in attachment_paths]
+        atts = self._attachment_urls(attachment_paths)
         self.convs_proxy.call(
             "replyToConversation",
             GLib.Variant("(xsav)", (thread_id, text, atts)),

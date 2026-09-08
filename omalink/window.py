@@ -892,18 +892,14 @@ class OmalinkWindow(Adw.ApplicationWindow):
             "view-reveal-symbolic" if hidden else "view-conceal-symbolic")
         self.hide_btn.set_tooltip_text(
             "Unhide conversation" if hidden else "Hide conversation")
-        # Request history whenever the thread only has its one cached
-        # message — gating on "was it ever requested" was wrong: if the
-        # first request came back empty (cold daemon cache), the thread
-        # got marked done and reopening never retried, so it was stuck
-        # showing a single message. Gating on the actual message count
-        # re-requests until history loads, then stops.
+        # Always pull fresh history on open. The local cache is shown
+        # immediately (below), but messages that arrived while the app was
+        # closed aren't in it — so request the current history every time
+        # and let it merge in via signals. Self-heal covers a cold daemon
+        # cache (empty first response).
         conv = self.kdec.conversations.get(row.thread_id)
-        if conv and len(conv.messages) <= 1:
-            self._requested_threads.add(row.thread_id)
-            self.kdec.request_conversation(row.thread_id)
-            # Self-heal for a cold daemon cache: if history still hasn't
-            # grown shortly, warm the whole cache and retry this thread.
+        self.kdec.request_conversation(row.thread_id, 0, 100)
+        if not conv or len(conv.messages) <= 1:
             GLib.timeout_add(1500, self._ensure_thread_loaded, row.thread_id)
         self._render_thread()
         self.msg_split.set_show_content(True)
@@ -1175,9 +1171,40 @@ class OmalinkWindow(Adw.ApplicationWindow):
         conv = self.kdec.conversations.get(self.current_thread)
         if not conv or (not text and not self._outgoing_attachments):
             return
-        self.kdec.reply_to_conversation(conv.thread_id, text, self._outgoing_attachments)
+        atts = self._prepare_attachments(self._outgoing_attachments)
+        self.kdec.reply_to_conversation(conv.thread_id, text, atts)
         self.entry.set_text("")
         self._on_clear_attachments(None)
+
+    def _prepare_attachments(self, paths):
+        """Make images MMS-friendly before sending. KDE Connect sends over
+        SMS/MMS only (no RCS), and MMS rejects large payloads — so downscale
+        photos to a sane dimension/quality. Non-images are sent as-is."""
+        out = []
+        tmpdir = os.path.expanduser("~/.cache/omalink/outgoing")
+        for p in paths:
+            mime = mimetypes.guess_type(p)[0] or ""
+            if not mime.startswith("image/"):
+                out.append(p)
+                continue
+            try:
+                pb = GdkPixbuf.Pixbuf.new_from_file(p)
+                w, h = pb.get_width(), pb.get_height()
+                scale = min(1.0, 1280 / max(w, h))
+                if scale < 1.0:
+                    pb = pb.scale_simple(round(w * scale), round(h * scale),
+                                         GdkPixbuf.InterpType.BILINEAR)
+                os.makedirs(tmpdir, exist_ok=True)
+                base = os.path.splitext(os.path.basename(p))[0]
+                dest = os.path.join(tmpdir, base + ".jpg")
+                pb.savev(dest, "jpeg", ["quality"], ["80"])
+                # If it's still large, drop quality further.
+                if os.path.getsize(dest) > 900_000:
+                    pb.savev(dest, "jpeg", ["quality"], ["60"])
+                out.append(dest)
+            except (GLib.Error, OSError):
+                out.append(p)
+        return out
 
     def _on_compose(self, _btn):
         dialog = Adw.AlertDialog(heading="New message",
